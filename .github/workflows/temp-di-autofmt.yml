@@ -20,17 +20,31 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Format and commit if needed
+      - name: Patch counters, format, and commit if needed
         shell: bash
         run: |
           set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/lib.rs')
+          text = path.read_text()
+          for name in (
+              'corruption_count',
+              'expiration_count',
+              'eviction_count',
+              'memory_evictions',
+              'disk_evictions',
+          ):
+              text = text.replace(f'let mut {name} = 0;', f'let mut {name} = 0_u64;')
+          path.write_text(text)
+          PY
           cargo fmt --all
           if git diff --quiet; then
-            echo "No formatting changes required."
+            echo "No patch or formatting changes required."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .
-          git commit -m "Apply rustfmt to DI core"
+          git commit -m "Fix explicit DI counter types"
           git push origin HEAD:feat/di-core
