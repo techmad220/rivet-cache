@@ -5,9 +5,7 @@ pub use policy::{
     CacheEvent, Clock, EvictionCandidate, EvictionPolicy, KeyStrategy, LruEviction, MetricsSink,
     NoopMetrics, Sha256KeyStrategy, SystemClock,
 };
-pub use store::{
-    FileStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry,
-};
+pub use store::{FileStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry};
 
 use std::collections::HashMap;
 use std::io;
@@ -255,10 +253,14 @@ impl ContextCache {
         }
 
         if corruption_count > 0 {
-            cache.metrics.record(CacheEvent::Corruption(corruption_count));
+            cache
+                .metrics
+                .record(CacheEvent::Corruption(corruption_count));
         }
         if expiration_count > 0 {
-            cache.metrics.record(CacheEvent::Expiration(expiration_count));
+            cache
+                .metrics
+                .record(CacheEvent::Expiration(expiration_count));
         }
         if eviction_count > 0 {
             cache
@@ -722,13 +724,8 @@ mod tests {
         std::fs::write(root.join(format!("{key}.rivetcache")), b"not-a-cache")
             .expect("corrupt file");
 
-        let cache = ContextCache::new(
-            Some(root.clone()),
-            0,
-            1024 * 1024,
-            Duration::from_secs(60),
-        )
-        .expect("cache");
+        let cache = ContextCache::new(Some(root.clone()), 0, 1024 * 1024, Duration::from_secs(60))
+            .expect("cache");
         assert_eq!(cache.get(&key).expect("get"), None);
         assert_eq!(cache.stats().expect("stats").corruptions, 1);
         let _ = std::fs::remove_dir_all(root);
@@ -783,7 +780,10 @@ mod tests {
             if key.contains(':') {
                 Ok(())
             } else {
-                Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid test key"))
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid test key",
+                ))
             }
         }
     }
@@ -927,10 +927,7 @@ mod tests {
 
         let key = cache.make_key("test", "m", "store");
         cache.put(&key, b"persisted", None, false).expect("put");
-        assert_eq!(
-            cache.get(&key).expect("get"),
-            Some(b"persisted".to_vec())
-        );
+        assert_eq!(cache.get(&key).expect("get"), Some(b"persisted".to_vec()));
         assert_eq!(cache.stats().expect("stats").disk_hits, 1);
     }
 }

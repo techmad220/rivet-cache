@@ -146,10 +146,9 @@ impl PersistentStore for FileStore {
 
         let mut file = File::open(&path)?;
         let header = read_header_from(&mut file)?;
-        let payload_len: usize = header
-            .payload_len
-            .try_into()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "cache payload is too large"))?;
+        let payload_len: usize = header.payload_len.try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "cache payload is too large")
+        })?;
 
         let mut payload = vec![0_u8; payload_len];
         file.read_exact(&mut payload)?;
