@@ -1,0 +1,15 @@
+[package]
+name = "aion-cache"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Bounded content-addressed cache with memory/disk tiers, LRU, TTL, pinning, atomic persistence, checksums, and corruption recovery."
+repository = "https://github.com/techmad220/aion-cache-rs"
+readme = "README.md"
+keywords = ["cache", "llm", "inference", "lru", "persistence"]
+categories = ["caching", "filesystem"]
+
+[dependencies]
+hex = "0.4"
+sha2 = "0.10"
