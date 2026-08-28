@@ -1,6 +1,8 @@
-# aion-cache-rs
+# RivetCache
 
-`aion-cache-rs` is a dependency-light Rust cache for inference and context artifacts. It was extracted from the production-proven cache core used by AION and released independently under the MIT License.
+**RivetCache** is a small, dependency-light Rust cache built for fast local reuse of opaque artifacts.
+
+It combines a bounded in-memory LRU tier with optional bounded persistent storage while keeping the API intentionally simple: generate a stable namespaced key, store bytes, retrieve bytes, inspect telemetry.
 
 ## Features
 
@@ -14,17 +16,14 @@
 - Restart persistence and disk-index reconstruction.
 - Memory/disk hit, miss, write, eviction, expiry, corruption, entry-count, and byte-count telemetry.
 - Thread-safe access through an internal mutex.
+- No async runtime requirement and no framework lock-in.
 
-The cache stores opaque bytes. Consumers decide whether those bytes represent exact completions, rendered prompts, embeddings, serialized state, or other artifacts.
-
-## Compatibility
-
-Version 0.1.0 intentionally preserves AION cache-v1 key and disk-format compatibility (`AION_CONTEXT_CACHE_V1`, `AIONC01`, and `.aioncache`). Existing AION key semantics therefore remain compatible while the implementation becomes an independent dependency.
+The cache stores opaque bytes. Consumers decide whether those bytes are model responses, rendered prompts, embeddings, serialized state, build artifacts, API responses, or anything else.
 
 ## Usage
 
 ```rust
-use aion_cache::ContextCache;
+use rivet_cache::ContextCache;
 use std::time::Duration;
 
 fn main() -> std::io::Result<()> {
@@ -42,19 +41,25 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-`Some(Duration::ZERO)` creates a non-expiring entry. A memory or disk quota of `0` disables that tier. Persistent disk caching also requires a root path.
+`Some(Duration::ZERO)` creates a non-expiring entry. A memory or disk quota of `0` disables that tier. Persistent storage also requires a root path.
+
+## Storage ABI
+
+RivetCache 0.1 uses:
+
+- key domain: `RIVET_CACHE_V1`
+- disk magic: `RIVET01`
+- disk extension: `.rivetcache`
+
+The namespace and model fingerprint are length-prefixed before hashing, preventing ambiguous key concatenation.
 
 ## Semantics
 
 Keys are content-addressed and should identify immutable values. A non-expired disk entry for an existing key is not overwritten. Pinned entries are not selected for quota eviction, so a cache containing only pinned entries can exceed its configured quota.
 
-## Origin certification
+## Validation
 
-The initial source was extracted from AION commit `0467bfba22ae19939ec6ac1e7f8ab6120488b433`, whose cache subsystem passed AION's canonical live end-to-end production certification on August 28, 2026. That AION integration measured **118.67x deterministic exact-replay acceleration** and **25.29x best llama.cpp prefix/KV-reuse acceleration**.
-
-Those measurements describe the certified AION integration, not a universal standalone-crate benchmark. Prefix/KV reuse is performed by the inference runtime; this crate provides the bounded persistent content cache used alongside that runtime.
-
-## Development
+Every public head is checked on Linux, Windows, and macOS with:
 
 ```text
 cargo fmt --all -- --check
@@ -62,7 +67,7 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
 
-CI runs these gates on Linux, Windows, and macOS.
+The cache design was exercised in a production integration before its standalone release, including memory and disk hits, LRU eviction, restart persistence, explicit invalidation, corruption recovery, TTL expiration, request isolation, deterministic replay, and runtime prefix reuse. Integration-specific speedups are workload-dependent and are not advertised as universal crate performance.
 
 ## License
 

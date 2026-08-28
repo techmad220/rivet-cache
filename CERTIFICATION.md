@@ -1,16 +1,19 @@
-# Certification provenance
+# Certification
 
-The initial standalone implementation was extracted from the Rust-native AION cache at source commit:
+RivetCache is validated independently as a standalone Rust crate.
 
-`0467bfba22ae19939ec6ac1e7f8ab6120488b433`
+## Standalone gates
 
-AION's canonical live cache certification for that lineage completed successfully on August 28, 2026 with the final receipt `AION_CACHE_PROVEN=PASS`.
+Every release candidate must pass on Linux, Windows, and macOS:
 
-The integration certification covered stable/namespaced keys, memory hit/miss behavior, LRU eviction, restart persistence, explicit clearing/invalidation, corruption recovery, TTL expiry, live routing, deterministic exact replay, request isolation, stochastic bypass, and llama.cpp prefix/KV reuse.
+- `cargo fmt --all -- --check`
+- `cargo test --all-targets`
+- `cargo clippy --all-targets -- -D warnings`
 
-Observed integration performance:
+The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, and TTL expiration.
 
-- Deterministic exact replay: **118.67x** speedup.
-- Best llama.cpp prefix/KV reuse: **25.29x** speedup.
+## Production provenance
 
-The standalone repository's CI independently validates the extracted Rust crate. AION integration measurements are not guaranteed performance for every consumer or model runtime.
+The cache design was extracted from a production-proven Rust cache subsystem on August 28, 2026. The production integration exercised stable namespaced keys, memory hit/miss behavior, LRU eviction, restart persistence, explicit clearing/invalidation, corruption recovery, TTL expiry, deterministic replay, request isolation, stochastic bypass, and runtime prefix/KV reuse.
+
+The standalone project uses its own `RIVET_CACHE_V1` key domain and `RIVET01` disk format, so its public ABI is independent and intentionally versioned from release 0.1.0 onward.

@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const MAGIC: &[u8; 8] = b"AIONC01\n";
+const MAGIC: &[u8; 8] = b"RIVET01\n";
 const HEADER_LEN: u64 = 8 + 8 + 1 + 8 + 32;
-const CACHE_EXTENSION: &str = "aioncache";
+const CACHE_EXTENSION: &str = "rivetcache";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CacheStats {
@@ -105,7 +105,7 @@ impl ContextCache {
     /// Build an unambiguous, versionable content-addressed key.
     pub fn key(namespace: &str, model_fingerprint: &str, payload: &str) -> String {
         let mut digest = Sha256::new();
-        digest.update(b"AION_CONTEXT_CACHE_V1\0");
+        digest.update(b"RIVET_CACHE_V1\0");
         update_length_prefixed(&mut digest, namespace.as_bytes());
         update_length_prefixed(&mut digest, model_fingerprint.as_bytes());
         update_length_prefixed(&mut digest, payload.as_bytes());
@@ -609,7 +609,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "aion-context-cache-{label}-{}-{nonce}",
+            "rivet-cache-{label}-{}-{nonce}",
             std::process::id()
         ))
     }

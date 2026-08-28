@@ -1,8 +1,8 @@
-use aion_cache::ContextCache;
+use rivet_cache::ContextCache;
 use std::time::Duration;
 
 fn main() -> std::io::Result<()> {
-    let root = std::env::temp_dir().join("aion-cache-example");
+    let root = std::env::temp_dir().join("rivet-cache-example");
     let cache = ContextCache::new(
         Some(root.clone()),
         1024 * 1024,
