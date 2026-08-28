@@ -223,9 +223,9 @@ impl ContextCache {
             inner: Mutex::new(Inner::default()),
         };
 
-        let mut corruption_count = 0;
-        let mut expiration_count = 0;
-        let mut eviction_count = 0;
+        let mut corruption_count = 0_u64;
+        let mut expiration_count = 0_u64;
+        let mut eviction_count = 0_u64;
 
         if cache.max_disk_bytes > 0 {
             if let Some(store) = cache.store.as_ref() {
@@ -285,8 +285,8 @@ impl ContextCache {
     pub fn get(&self, key: &str) -> io::Result<Option<Vec<u8>>> {
         self.key_strategy.validate(key)?;
         let now = self.clock.now_seconds();
-        let mut expiration_count = 0;
-        let mut memory_evictions = 0;
+        let mut expiration_count = 0_u64;
+        let mut memory_evictions = 0_u64;
 
         let mut inner = self.lock_inner()?;
         if let Some(record) = inner.memory.get(key) {
@@ -429,9 +429,9 @@ impl ContextCache {
             now.saturating_add(ttl.as_secs().max(1))
         };
 
-        let mut expiration_count = 0;
-        let mut memory_evictions = 0;
-        let mut disk_evictions = 0;
+        let mut expiration_count = 0_u64;
+        let mut memory_evictions = 0_u64;
+        let mut disk_evictions = 0_u64;
         let mut inner = self.lock_inner()?;
 
         if self.max_disk_bytes > 0 && (value.len() as u64) <= self.max_disk_bytes {
