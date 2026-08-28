@@ -1,10 +1,17 @@
 # Changelog
 
+## 0.2.0 - 2026-08-28
+
+- Refactored the cache core to dependency-injected Rust traits.
+- Added pluggable `PersistentStore`, `KeyStrategy`, `Clock`, `EvictionPolicy`, and `MetricsSink`.
+- Added `ContextCacheBuilder` while preserving the original `ContextCache::new` constructor.
+- Extracted the default filesystem persistent tier into `FileStore`.
+- Added deterministic clock/TTL tests and injected-component tests.
+- Retained the RivetCache v1 default key ABI and filesystem format.
+
 ## 0.1.0 - 2026-08-28
 
-- Initial public MIT release of RivetCache.
+- Initial standalone MIT release.
 - Memory and persistent disk tiers.
 - Stable namespaced content-addressed keys.
 - LRU eviction, TTL expiry, pinning, atomic writes, checksums, corruption recovery, restart persistence, clearing, and telemetry.
-- Independent `RIVET_CACHE_V1` key domain, `RIVET01` disk magic, and `.rivetcache` storage extension.
-- Cross-platform Linux, Windows, and macOS CI.
