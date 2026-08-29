@@ -1,5 +1,8 @@
-use crate::{KvBlockKey, KvTier, KvTierEntry, NativeKvSdk, NativeSdkKvTier};
+#[cfg(target_os = "linux")]
+use crate::NativeKvSdk;
+use crate::{KvBlockKey, KvTier, KvTierEntry, NativeSdkKvTier};
 use std::io;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
