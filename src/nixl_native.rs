@@ -1,6 +1,6 @@
 use nixl_sys::{
-    is_stub, Agent, Backend, MemType, MemoryRegion, NixlDescriptor, NixlRegistration, SystemStorage,
-    XferDescList, XferOp, XferStatus,
+    is_stub, Agent, Backend, MemType, MemoryRegion, NixlDescriptor, NixlRegistration,
+    SystemStorage, XferDescList, XferOp, XferStatus,
 };
 use std::io;
 use std::thread;
@@ -39,7 +39,9 @@ impl NixlHostBuffer {
             ));
         }
         let mut storage = SystemStorage::new(len).map_err(nixl_error)?;
-        storage.register(&endpoint.agent, None).map_err(nixl_error)?;
+        storage
+            .register(&endpoint.agent, None)
+            .map_err(nixl_error)?;
         Ok(Self { storage })
     }
 
@@ -54,13 +56,11 @@ impl NixlHostBuffer {
         // SAFETY: `storage` is uniquely borrowed here, its Vec allocation is writable for
         // exactly `storage.size()` bytes, and registration has not occurred yet.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                storage.as_ptr().cast_mut(),
-                bytes.len(),
-            );
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), storage.as_ptr().cast_mut(), bytes.len());
         }
-        storage.register(&endpoint.agent, None).map_err(nixl_error)?;
+        storage
+            .register(&endpoint.agent, None)
+            .map_err(nixl_error)?;
         Ok(Self { storage })
     }
 
