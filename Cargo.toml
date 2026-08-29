@@ -19,6 +19,11 @@ nixl = ["dep:nixl-sys"]
 # abort if invoked, so this feature is for compile/rustdoc coverage only.
 nixl-stub = ["nixl", "nixl-sys/stub-api"]
 
+[[bin]]
+name = "rivet-cache-nixl-cert"
+path = "src/bin/rivet-cache-nixl-cert.rs"
+required-features = ["nixl"]
+
 [dependencies]
 hex = "0.4"
 sha2 = "0.10"
