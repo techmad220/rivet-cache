@@ -55,7 +55,9 @@ impl RuntimeCacheController {
         tokens: Vec<u32>,
         timeout: Duration,
     ) -> io::Result<RuntimeLookupResult> {
-        let ticket = self.mp.submit_lookup(session_id, model_fingerprint, tokens)?;
+        let ticket = self
+            .mp
+            .submit_lookup(session_id, model_fingerprint, tokens)?;
         let status = self.mp.wait(ticket.request_id, timeout)?;
         Ok(RuntimeLookupResult {
             request_id: status.request_id,
@@ -183,11 +185,7 @@ impl RuntimeCacheController {
         }))
     }
 
-    fn keys_for(
-        &self,
-        model_fingerprint: String,
-        tokens: Vec<u32>,
-    ) -> io::Result<Vec<KvBlockKey>> {
+    fn keys_for(&self, model_fingerprint: String, tokens: Vec<u32>) -> io::Result<Vec<KvBlockKey>> {
         if model_fingerprint.trim().is_empty() || tokens.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -280,9 +278,7 @@ mod tests {
     #[test]
     fn move_and_check_finish_are_controller_operations() {
         let controller = controller();
-        let keys = controller
-            .keys_for("model".to_owned(), vec![1, 2])
-            .unwrap();
+        let keys = controller.keys_for("model".to_owned(), vec![1, 2]).unwrap();
         controller
             .engine
             .put_to(
