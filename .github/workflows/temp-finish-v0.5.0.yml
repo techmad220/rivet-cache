@@ -1,0 +1,30 @@
+name: Temporary v0.5 completion builder
+
+on:
+  push:
+    branches: [feat/distributed-runtime-completion]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/distributed-runtime-completion
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Generate completion layer
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('src')
+          print('builder bootstrap only')
+          PY
+      - name: Bootstrap stop
+        run: |
+          echo 'Bootstrap workflow installed; source patch follows in next commit.'
