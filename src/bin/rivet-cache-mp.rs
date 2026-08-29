@@ -1,7 +1,7 @@
 use rivet_cache::{
-    AsyncKvPipeline, ContextCache, ContextCacheTier, KvEngine, MpCacheConfig, MpCacheService,
-    MpEngineKind, MpTransferMode, PrefixIndex, PrometheusEventSubscriber, PrometheusRegistry,
-    KvEventBus,
+    AsyncKvPipeline, ContextCache, ContextCacheTier, KvEngine, KvEventBus, MpCacheConfig,
+    MpCacheService, MpEngineKind, MpTransferMode, PrefixIndex, PrometheusEventSubscriber,
+    PrometheusRegistry,
 };
 use std::env;
 use std::io;
@@ -69,25 +69,25 @@ fn main() -> io::Result<()> {
 }
 
 fn mib(value: u64) -> io::Result<u64> {
-    value.checked_mul(1024 * 1024).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "MiB capacity overflows u64")
-    })
+    value
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "MiB capacity overflows u64"))
 }
 
 fn parse_u64(value: Option<&str>, default: u64, name: &str) -> io::Result<u64> {
     match value {
-        Some(value) => value.parse::<u64>().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {name}"))
-        }),
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {name}"))),
         None => Ok(default),
     }
 }
 
 fn parse_usize(value: Option<&str>, default: usize, name: &str) -> io::Result<usize> {
     match value {
-        Some(value) => value.parse::<usize>().map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {name}"))
-        }),
+        Some(value) => value
+            .parse::<usize>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("invalid {name}"))),
         None => Ok(default),
     }
 }
