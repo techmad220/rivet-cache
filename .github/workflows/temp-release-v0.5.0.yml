@@ -1,0 +1,93 @@
+name: Temporary v0.5.0 release
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.head_ref == 'ops/release-v0.5.0-20260828'
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TARGET: 68ef68387dbb8febb99d2f04c16eed5fe5084900
+      RELEASE_TAG: v0.5.0
+      RELEASE_BRANCH: ops/release-v0.5.0-20260828
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact certified release target
+        uses: actions/checkout@v4
+        with:
+          ref: 68ef68387dbb8febb99d2f04c16eed5fe5084900
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_TARGET"
+          grep -Eq '^version = "0\.5\.0"$' Cargo.toml
+          test "$(git rev-parse HEAD^{tree})" = "fdc75b384bfdc2157cefd5d78eb1ee80be39c20f"
+
+      - name: Release package gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo package --locked
+          test -z "$(git status --porcelain)"
+
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/release-notes.md <<'EOF'
+          RivetCache v0.5.0 completes the distributed/runtime execution pass around the DI-first KV cache core.
+
+          Highlights:
+          - Standalone std-only TCP KV service plus `TcpKvTier` client for cross-process and cross-host RivetCache sharing.
+          - Bounded remote payload/model sizes, connection limits, timeouts, health checks, clear, get, put, and remove operations.
+          - `DeviceKvTier` with injected device-buffer ownership, a host reference backend, and an opt-in unsafe FFI callback bridge for accelerator integrations.
+          - `LlamaCppAdapter` host-callback capture/restore path plus relocated restore for reusable exact segments.
+          - `SegmentIndex` and `restore_reuse` for deterministic, complete-block-aligned exact non-prefix segment reuse.
+          - Tier health, clear, and pin/unpin management operations on `KvEngine`.
+          - No mandatory async runtime, networking framework, GPU SDK, or inference-engine dependency added to the core crate.
+
+          Security and scope:
+          - The bundled TCP protocol does not provide authentication or TLS; use it only on trusted application networks or behind an authenticated/tunneled boundary.
+          - The llama.cpp callback contract is a RivetCache host integration surface; it does not claim compatibility with an upstream private or internal ABI.
+          - Public RivetCache claims describe implemented and tested RivetCache capabilities directly. Hardware-specific throughput, external-runtime build compatibility, third-party transport interoperability, and comparative performance require separate implementation-specific evidence.
+
+          Certification:
+          - Exact release commit: `68ef68387dbb8febb99d2f04c16eed5fe5084900`
+          - Exact candidate PR CI run `33224738524`: Linux, macOS, and Windows passed formatting, all-target tests, and clippy.
+          - Exact merged-main CI run `33224788701`: Linux, macOS, and Windows passed formatting, all-target tests, and clippy.
+          - This release job reruns formatting, all-target tests, clippy with warnings denied, and `cargo package --locked` against the exact release commit before publishing.
+          EOF
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$RELEASE_TARGET" \
+            --title "RivetCache v0.5.0" \
+            --notes-file /tmp/release-notes.md
+
+      - name: Verify published target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)" = "$RELEASE_TARGET"
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_TARGET"
+
+      - name: Delete temporary release branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$RELEASE_BRANCH"
