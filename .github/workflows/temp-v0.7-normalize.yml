@@ -28,6 +28,126 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
+      - name: Repair crate-root integration and MSRV hygiene
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          cargo_path = Path('Cargo.toml')
+          cargo = cargo_path.read_text()
+          cargo = cargo.replace('[lib]\npath = "src/lib_v07.rs"\n\n', '')
+          cargo_path.write_text(cargo)
+
+          lib_path = Path('src/lib.rs')
+          lib = lib_path.read_text()
+          old_modules = '''mod device;
+          mod kv;
+          mod llama_cpp;
+          mod policy;
+          mod remote;
+          mod reuse;
+          mod store;
+          '''
+          new_modules = '''mod codec;
+          mod connectors;
+          mod control;
+          mod device;
+          mod distributed;
+          mod gpu_direct;
+          mod kv;
+          mod llama_cpp;
+          mod memory;
+          mod observability;
+          mod plugins;
+          mod policy;
+          mod quality;
+          mod remote;
+          mod reuse;
+          mod store;
+          '''
+          if old_modules not in lib:
+              raise SystemExit('legacy module header not found')
+          lib = lib.replace(old_modules, new_modules, 1)
+          store_exports = '''pub use store::{
+              FileStore, LayeredStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry,
+              VolatileStore,
+          };
+          '''
+          additions = store_exports + '''pub use codec::{CodecKvTier, CodecRegistry, IdentityCodec, PayloadCodec, RleCodec};
+          pub use connectors::{
+              HttpClient, HttpRequest, HttpResponse, RedisAuth, RedisDialer, RedisKvTier, RedisStream,
+              S3Clock, S3Config, S3Credentials, S3KvTier, SystemS3Clock, TcpHttpClient, TcpRedisDialer,
+          };
+          pub use control::{
+              CacheController, ControllerServer, FleetNode, FleetRegistry, QuotaManager, RequestLease,
+              StorageReservation, TenantQuota, TenantSnapshot, TenantUsage,
+          };
+          pub use distributed::{
+              DeviceTransferFn, DeviceTransferHealthFn, DeviceTransferProvider, DirectTransferRequest,
+              DisaggregatedKvRouter, FfiDeviceTransferOps, FfiDeviceTransferProvider, KvHandoffReport,
+              TransportCapabilities, TransportKind, WorkerRole,
+          };
+          pub use gpu_direct::{
+              FfiGpuDirectIo, FfiGpuDirectOps, GpuCopyFn, GpuDirectCapabilities, GpuDirectHealthFn,
+              GpuDirectIo, GpuFileReadFn, GpuFileWriteFn,
+          };
+          pub use memory::{
+              HeapPageAllocator, NativePinnedAllocator, PageAllocator, PinnedLease, PinnedMemoryPool,
+              PinnedPoolStats,
+          };
+          pub use observability::{InstrumentedKvTier, PrometheusRegistry};
+          pub use plugins::{
+              CodecPluginFactory, KvTierPluginFactory, PluginComponent, PluginManifest, PluginRegistry,
+              TransportPluginFactory,
+          };
+          pub use quality::{
+              apply_quality_reuse, plan_quality_reuse, QualityAwareRuntimeKvAdapter, QualityReusePlan,
+              QualityReusePolicy, TokenRange,
+          };
+          '''
+          if store_exports not in lib:
+              raise SystemExit('store export block not found')
+          lib = lib.replace(store_exports, additions, 1)
+          lib_path.write_text(lib)
+
+          legacy_wrapper = Path('src/lib_v07.rs')
+          if legacy_wrapper.exists():
+              legacy_wrapper.unlink()
+
+          connectors_path = Path('src/connectors.rs')
+          connectors = connectors_path.read_text()
+          connectors = connectors.replace('use std::collections::HashMap;\n', '')
+          connectors = connectors.replace(
+              'use std::io::{self, BufRead, BufReader, Cursor, Read, Write};',
+              'use std::io::{self, BufRead, BufReader, Read, Write};',
+          )
+          connectors = connectors.replace('use std::sync::{Arc, Mutex};', 'use std::sync::Arc;')
+          test_marker = '    use crate::KvBlockRange;\n'
+          test_imports = test_marker + '    use std::collections::HashMap;\n    use std::io::Cursor;\n    use std::sync::Mutex;\n'
+          if test_marker not in connectors:
+              raise SystemExit('connector test marker not found')
+          connectors = connectors.replace(test_marker, test_imports, 1)
+          connectors_path.write_text(connectors)
+
+          control_path = Path('src/control.rs')
+          control = control_path.read_text()
+          control = control.replace('io::ErrorKind::StorageFull,', 'io::ErrorKind::Other,')
+          control = control.replace(
+              'quotas.begin_request("tenant-a").unwrap_err().kind(),',
+              'quotas\n                .begin_request("tenant-a")\n                .err()\n                .expect("inflight quota error")\n                .kind(),',
+          )
+          control_path.write_text(control)
+
+          memory_path = Path('src/memory.rs')
+          memory = memory_path.read_text()
+          memory = memory.replace(
+              'pool.acquire(1024, Some(0)).unwrap_err().kind(),',
+              'pool.acquire(1024, Some(0))\n                .err()\n                .expect("unsupported NUMA error")\n                .kind(),',
+          )
+          memory_path.write_text(memory)
+          PY
+
       - name: Normalize source
         run: cargo fmt --all
 
@@ -63,7 +183,7 @@ jobs:
           fi
           git config user.name "techmad220"
           git config user.email "143960678+techmad220@users.noreply.github.com"
-          git add src Cargo.toml
-          git commit -m "Normalize RivetCache v0.7 production modules"
+          git add -A src Cargo.toml
+          git commit -m "Integrate and normalize RivetCache v0.7 production modules"
           git push origin HEAD:feat/v0.7-production-breadth
           echo "RIVET_V07_NORMALIZE=PUSHED"
