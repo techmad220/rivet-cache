@@ -1,4 +1,4 @@
-name: Temporary v0.3.0 release
+name: Temporary v0.3.0 release cleanup
 
 on:
   pull_request:
@@ -8,76 +8,23 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  cleanup:
     if: github.event.pull_request.head.ref == 'ops/release-v0.3.0-20260828'
     runs-on: ubuntu-latest
     env:
       TARGET_SHA: a437c06ca1b309046c2a559cbd7a4feba8b0ea4e
       TAG: v0.3.0
+      BRANCH: ops/release-v0.3.0-20260828
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout exact certified release target
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TARGET_SHA }}
-          fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify target identity
+      - name: Verify published release
         shell: bash
         run: |
-          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
-          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)" = "0.3.0"
+          target="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
+          test "$target" = "$TARGET_SHA"
 
-      - name: Release package gate
-        run: |
-          cargo fmt --all -- --check
-          cargo test --all-targets
-          cargo clippy --all-targets -- -D warnings
-          cargo package --locked
-
-      - name: Create immutable GitHub release
+      - name: Delete temporary release branch
         shell: bash
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            existing_target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
-            test "$existing_target" = "$TARGET_SHA" || {
-              echo "existing release target mismatch: $existing_target" >&2
-              exit 1
-            }
-            exit 0
-          fi
-
-          cat > /tmp/release-notes.md <<'NOTES'
-          RivetCache v0.3.0 expands the DI-first cache core with composable storage and explicit cache-control APIs.
-
-          Highlights:
-          - `LayeredStore` for ordered reads and replicated writes across injected stores.
-          - `VolatileStore` as an in-process ephemeral backend and reference `PersistentStore` implementation.
-          - Fail-closed detection of conflicting existing replicas.
-          - `get_many` and `put_many` batch helpers.
-          - `invalidate` and `invalidate_many` with explicit invalidation telemetry.
-          - Existing `RIVET_CACHE_V1` key ABI and `RIVET01` filesystem ABI retained.
-          - Runtime-neutral synchronous Rust core with no async-runtime requirement.
-
-          Certification:
-          - exact release commit: `a437c06ca1b309046c2a559cbd7a4feba8b0ea4e`
-          - Linux, macOS, and Windows passed formatting, all-target tests, and clippy with warnings denied.
-          - release packaging additionally runs `cargo package --locked` on the exact release commit.
-
-          Public claims for RivetCache describe implemented and tested RivetCache capabilities directly. Third-party compatibility or comparative-performance claims require separate documented evidence.
-          NOTES
-
-          gh release create "$TAG" \
-            --target "$TARGET_SHA" \
-            --title "RivetCache v0.3.0" \
-            --notes-file /tmp/release-notes.md \
-            --verify-tag=false
-
-      - name: Verify release target
-        shell: bash
-        run: |
-          tag_sha="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$TAG" | awk '{print $1}')"
-          test "$tag_sha" = "$TARGET_SHA"
-          gh release view "$TAG" --json tagName,isDraft,isPrerelease,targetCommitish,url --jq '.'
+          ref="heads/${BRANCH}"
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/${ref}"
