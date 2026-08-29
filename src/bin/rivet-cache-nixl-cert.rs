@@ -1,5 +1,7 @@
 #[cfg(not(target_os = "linux"))]
-compile_error!("rivet-cache-nixl-cert is supported only on Linux because upstream NIXL is Linux-only");
+compile_error!(
+    "rivet-cache-nixl-cert is supported only on Linux because upstream NIXL is Linux-only"
+);
 
 #[path = "../nixl_native.rs"]
 mod nixl_native;
@@ -45,12 +47,8 @@ fn main() -> io::Result<()> {
         ));
     }
 
-    let receipt = source.write_remote(
-        &source_buffer,
-        &target_name,
-        target_buffer.region()?,
-        bytes,
-    )?;
+    let receipt =
+        source.write_remote(&source_buffer, &target_name, target_buffer.region()?, bytes)?;
 
     if target_buffer.as_slice() != payload.as_slice() {
         let mismatch = target_buffer
@@ -71,7 +69,11 @@ fn main() -> io::Result<()> {
         receipt.bytes,
         receipt.elapsed.as_micros()
     );
-    println!("RIVET_NIXL_METADATA=PASS source_bytes={} target_bytes={}", source_metadata.len(), target_metadata.len());
+    println!(
+        "RIVET_NIXL_METADATA=PASS source_bytes={} target_bytes={}",
+        source_metadata.len(),
+        target_metadata.len()
+    );
     println!("RIVET_V08_NIXL_CERT=PASS");
     Ok(())
 }
