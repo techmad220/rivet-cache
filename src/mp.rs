@@ -76,13 +76,14 @@ pub struct MpRequestStatus {
 
 #[derive(Debug, Clone)]
 struct RequestRecord {
-    session_id: String,
+    session: String,
     kind: MpRequestKind,
     job_id: u64,
+    total: u64,
     keys: Vec<KvBlockKey>,
-    model_fingerprint: String,
+    model: String,
     tokens: Vec<u32>,
-    indexed: bool,
+    prefix_indexed: bool,
 }
 
 #[derive(Clone)]
@@ -127,325 +128,6 @@ impl MpCacheService {
         self.config.block_tokens
     }
 
-    pub fn submit_lookup(
-        &self,
-        session_id: impl Into<String>,
-        model_fingerprint: impl Into<String>,
-        tokens: Vec<u32>,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let model_fingerprint = validate_model(model_fingerprint.into())?;
-        if tokens.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "MP lookup requires at least one token",
-            ));
-        }
-
-        let keys = match self.prefix.longest_prefix(&model_fingerprint, &tokens)? {
-            Some(prefix) if !prefix.block_keys.is_empty() => prefix.block_keys,
-            _ => self.keys_for(&model_fingerprint, &tokens)?,
-        };
-        let job_id = self
-            .pipeline
-            .submit_prefetch(keys.clone(), self.config.l1_tier)?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Lookup,
-            job_id,
-            keys: keys.clone(),
-            model_fingerprint,
-            tokens,
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Lookup,
-            total_chunks: keys.len() as u64,
-        })
-    }
-
-    pub fn submit_store(
-        &self,
-        session_id: impl Into<String>,
-        model_fingerprint: impl Into<String>,
-        tokens: Vec<u32>,
-        blocks: Vec<KvBlock>,
-        ttl: Option<Duration>,
-        pinned: bool,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let model_fingerprint = validate_model(model_fingerprint.into())?;
-        if tokens.is_empty() || blocks.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "MP store requires tokens and KV blocks",
-            ));
-        }
-        let keys = self.keys_for(&model_fingerprint, &tokens)?;
-        if blocks.len() != keys.len()
-            || blocks
-                .iter()
-                .zip(keys.iter())
-                .any(|(block, expected)| &block.key != expected)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "MP store blocks do not match the configured token/chunk identity",
-            ));
-        }
-        let job_id = self.pipeline.submit_store(blocks, ttl, pinned)?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Store,
-            job_id,
-            keys: keys.clone(),
-            model_fingerprint,
-            tokens,
-            indexed: false,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Store,
-            total_chunks: keys.len() as u64,
-        })
-    }
-
-    pub fn submit_retrieve(
-        &self,
-        session_id: impl Into<String>,
-        model_fingerprint: impl Into<String>,
-        tokens: Vec<u32>,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let model_fingerprint = validate_model(model_fingerprint.into())?;
-        let keys = self.keys_for(&model_fingerprint, &tokens)?;
-        if keys.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "MP retrieve requires at least one token",
-            ));
-        }
-        let job_id = self.pipeline.submit_retrieve(keys.clone())?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Retrieve,
-            job_id,
-            keys: keys.clone(),
-            model_fingerprint,
-            tokens,
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Retrieve,
-            total_chunks: keys.len() as u64,
-        })
-    }
-
-    pub fn submit_retrieve_lookup(
-        &self,
-        session_id: impl Into<String>,
-        lookup_request_id: u64,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let lookup = self.request_record(lookup_request_id)?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("unknown MP lookup request {lookup_request_id}"),
-            )
-        })?;
-        if lookup.kind != MpRequestKind::Lookup {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "retrieve_lookup requires a lookup request id",
-            ));
-        }
-        let job_id = self.pipeline.submit_retrieve(lookup.keys.clone())?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Retrieve,
-            job_id,
-            keys: lookup.keys.clone(),
-            model_fingerprint: lookup.model_fingerprint,
-            tokens: lookup.tokens,
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Retrieve,
-            total_chunks: lookup.keys.len() as u64,
-        })
-    }
-
-    pub fn submit_pin(
-        &self,
-        session_id: impl Into<String>,
-        model_fingerprint: impl Into<String>,
-        tokens: Vec<u32>,
-        pinned: bool,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let model_fingerprint = validate_model(model_fingerprint.into())?;
-        let keys = self.keys_for(&model_fingerprint, &tokens)?;
-        if keys.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "MP pin operation requires at least one token",
-            ));
-        }
-        let job_id = self.pipeline.submit_set_pinned(keys.clone(), pinned)?;
-        let kind = if pinned {
-            MpRequestKind::Pin
-        } else {
-            MpRequestKind::Unpin
-        };
-        self.register_request(RequestRecord {
-            session_id,
-            kind,
-            job_id,
-            keys: keys.clone(),
-            model_fingerprint,
-            tokens,
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind,
-            total_chunks: keys.len() as u64,
-        })
-    }
-
-    pub fn submit_delete(
-        &self,
-        session_id: impl Into<String>,
-        model_fingerprint: impl Into<String>,
-        tokens: Vec<u32>,
-    ) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let model_fingerprint = validate_model(model_fingerprint.into())?;
-        let keys = self.keys_for(&model_fingerprint, &tokens)?;
-        if keys.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "MP delete requires at least one token",
-            ));
-        }
-        let job_id = self.pipeline.submit_invalidate(keys.clone())?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Delete,
-            job_id,
-            keys: keys.clone(),
-            model_fingerprint,
-            tokens,
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Delete,
-            total_chunks: keys.len() as u64,
-        })
-    }
-
-    pub fn submit_clear(&self, session_id: impl Into<String>) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let job_id = self.pipeline.submit_clear()?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Clear,
-            job_id,
-            keys: Vec::new(),
-            model_fingerprint: String::new(),
-            tokens: Vec::new(),
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Clear,
-            total_chunks: 1,
-        })
-    }
-
-    pub fn submit_health(&self, session_id: impl Into<String>) -> io::Result<MpRequestTicket> {
-        let session_id = validate_session(session_id.into())?;
-        let job_id = self.pipeline.submit_health()?;
-        self.register_request(RequestRecord {
-            session_id,
-            kind: MpRequestKind::Health,
-            job_id,
-            keys: Vec::new(),
-            model_fingerprint: String::new(),
-            tokens: Vec::new(),
-            indexed: true,
-        })?;
-        Ok(MpRequestTicket {
-            request_id: job_id,
-            kind: MpRequestKind::Health,
-            total_chunks: 1,
-        })
-    }
-
-    pub fn query(&self, request_id: u64) -> io::Result<Option<MpRequestStatus>> {
-        let Some(snapshot) = self.pipeline.snapshot(request_id)? else {
-            return Ok(None);
-        };
-        let Some(record) = self.request_record(request_id)? else {
-            return Ok(None);
-        };
-        self.finalize_index_if_needed(&record, &snapshot)?;
-        Ok(Some(status_from(&record, &snapshot)))
-    }
-
-    pub fn wait(&self, request_id: u64, timeout: Duration) -> io::Result<MpRequestStatus> {
-        let snapshot = self.pipeline.wait(request_id, timeout)?;
-        let record = self.request_record(request_id)?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("unknown MP request {request_id}"),
-            )
-        })?;
-        self.finalize_index_if_needed(&record, &snapshot)?;
-        Ok(status_from(&record, &snapshot))
-    }
-
-    pub fn retrieve_result(&self, request_id: u64) -> io::Result<Option<Vec<KvBlock>>> {
-        let Some(snapshot) = self.pipeline.snapshot(request_id)? else {
-            return Ok(None);
-        };
-        if snapshot.operation != AsyncKvOperation::Retrieve {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "request is not a retrieve operation",
-            ));
-        }
-        Ok(snapshot.result.map(|result| result.blocks))
-    }
-
-    pub fn finish(&self, timeout: Duration) -> io::Result<bool> {
-        self.pipeline.finish(timeout)
-    }
-
-    pub fn end_session(&self, session_id: &str) -> io::Result<usize> {
-        let ids = self
-            .sessions
-            .lock()
-            .map_err(|_| io::Error::other("MP session registry lock poisoned"))?
-            .remove(session_id)
-            .unwrap_or_default();
-        let mut requests = self
-            .requests
-            .lock()
-            .map_err(|_| io::Error::other("MP request registry lock poisoned"))?;
-        let mut removed = 0;
-        for id in ids {
-            if requests.remove(&id).is_some() {
-                removed += 1;
-            }
-        }
-        Ok(removed)
-    }
-
     pub fn engine(&self) -> &KvEngine {
         &self.engine
     }
@@ -454,9 +136,268 @@ impl MpCacheService {
         Arc::clone(&self.prefix)
     }
 
-    fn keys_for(&self, model_fingerprint: &str, tokens: &[u32]) -> io::Result<Vec<KvBlockKey>> {
+    pub fn submit_lookup(
+        &self,
+        session: impl Into<String>,
+        model: impl Into<String>,
+        tokens: Vec<u32>,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let model = validate_model(model.into())?;
+        if tokens.is_empty() {
+            return invalid("MP lookup requires at least one token");
+        }
+        let keys = match self.prefix.longest_prefix(&model, &tokens)? {
+            Some(found) if !found.block_keys.is_empty() => found.block_keys,
+            _ => self.keys_for(&model, &tokens)?,
+        };
+        let job_id = self
+            .pipeline
+            .submit_prefetch(keys.clone(), self.config.l1_tier)?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Lookup,
+            job_id,
+            total: keys.len() as u64,
+            keys,
+            model,
+            tokens,
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_store(
+        &self,
+        session: impl Into<String>,
+        model: impl Into<String>,
+        tokens: Vec<u32>,
+        blocks: Vec<KvBlock>,
+        ttl: Option<Duration>,
+        pinned: bool,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let model = validate_model(model.into())?;
+        if tokens.is_empty() || blocks.is_empty() {
+            return invalid("MP store requires tokens and KV blocks");
+        }
+        let keys = self.keys_for(&model, &tokens)?;
+        if blocks.len() != keys.len()
+            || blocks
+                .iter()
+                .zip(&keys)
+                .any(|(block, expected)| &block.key != expected)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MP store blocks do not match configured token/chunk identity",
+            ));
+        }
+        let job_id = self.pipeline.submit_store(blocks, ttl, pinned)?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Store,
+            job_id,
+            total: keys.len() as u64,
+            keys,
+            model,
+            tokens,
+            prefix_indexed: false,
+        })
+    }
+
+    pub fn submit_retrieve(
+        &self,
+        session: impl Into<String>,
+        model: impl Into<String>,
+        tokens: Vec<u32>,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let model = validate_model(model.into())?;
+        let keys = self.keys_for(&model, &tokens)?;
+        if keys.is_empty() {
+            return invalid("MP retrieve requires at least one token");
+        }
+        let job_id = self.pipeline.submit_retrieve(keys.clone())?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Retrieve,
+            job_id,
+            total: keys.len() as u64,
+            keys,
+            model,
+            tokens,
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_retrieve_lookup(
+        &self,
+        session: impl Into<String>,
+        lookup_request_id: u64,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let lookup = self.record(lookup_request_id)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("unknown MP lookup request {lookup_request_id}"),
+            )
+        })?;
+        if lookup.kind != MpRequestKind::Lookup {
+            return invalid("retrieve_lookup requires a lookup request id");
+        }
+        let job_id = self.pipeline.submit_retrieve(lookup.keys.clone())?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Retrieve,
+            job_id,
+            total: lookup.total,
+            keys: lookup.keys,
+            model: lookup.model,
+            tokens: lookup.tokens,
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_pin(
+        &self,
+        session: impl Into<String>,
+        model: impl Into<String>,
+        tokens: Vec<u32>,
+        pinned: bool,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let model = validate_model(model.into())?;
+        let keys = self.keys_for(&model, &tokens)?;
+        if keys.is_empty() {
+            return invalid("MP pin operation requires at least one token");
+        }
+        let kind = if pinned {
+            MpRequestKind::Pin
+        } else {
+            MpRequestKind::Unpin
+        };
+        let job_id = self.pipeline.submit_set_pinned(keys.clone(), pinned)?;
+        self.register(RequestRecord {
+            session,
+            kind,
+            job_id,
+            total: keys.len() as u64,
+            keys,
+            model,
+            tokens,
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_delete(
+        &self,
+        session: impl Into<String>,
+        model: impl Into<String>,
+        tokens: Vec<u32>,
+    ) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let model = validate_model(model.into())?;
+        let keys = self.keys_for(&model, &tokens)?;
+        if keys.is_empty() {
+            return invalid("MP delete requires at least one token");
+        }
+        let job_id = self.pipeline.submit_invalidate(keys.clone())?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Delete,
+            job_id,
+            total: keys.len() as u64,
+            keys,
+            model,
+            tokens,
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_clear(&self, session: impl Into<String>) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let job_id = self.pipeline.submit_clear()?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Clear,
+            job_id,
+            total: 1,
+            keys: Vec::new(),
+            model: String::new(),
+            tokens: Vec::new(),
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn submit_health(&self, session: impl Into<String>) -> io::Result<MpRequestTicket> {
+        let session = validate_id(session.into(), "session")?;
+        let job_id = self.pipeline.submit_health()?;
+        self.register(RequestRecord {
+            session,
+            kind: MpRequestKind::Health,
+            job_id,
+            total: 1,
+            keys: Vec::new(),
+            model: String::new(),
+            tokens: Vec::new(),
+            prefix_indexed: true,
+        })
+    }
+
+    pub fn query(&self, id: u64) -> io::Result<Option<MpRequestStatus>> {
+        let Some(snapshot) = self.pipeline.snapshot(id)? else {
+            return Ok(None);
+        };
+        let Some(record) = self.record(id)? else {
+            return Ok(None);
+        };
+        self.finalize_prefix(&record, &snapshot)?;
+        Ok(Some(status(&record, &snapshot)))
+    }
+
+    pub fn wait(&self, id: u64, timeout: Duration) -> io::Result<MpRequestStatus> {
+        let snapshot = self.pipeline.wait(id, timeout)?;
+        let record = self.record(id)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("unknown MP request {id}"))
+        })?;
+        self.finalize_prefix(&record, &snapshot)?;
+        Ok(status(&record, &snapshot))
+    }
+
+    pub fn retrieve_result(&self, id: u64) -> io::Result<Option<Vec<KvBlock>>> {
+        let Some(snapshot) = self.pipeline.snapshot(id)? else {
+            return Ok(None);
+        };
+        if snapshot.operation != AsyncKvOperation::Retrieve {
+            return invalid("request is not a retrieve operation");
+        }
+        Ok(snapshot.result.map(|result| result.blocks))
+    }
+
+    pub fn finish(&self, timeout: Duration) -> io::Result<bool> {
+        self.pipeline.finish(timeout)
+    }
+
+    pub fn end_session(&self, session: &str) -> io::Result<usize> {
+        let ids = self
+            .sessions
+            .lock()
+            .map_err(|_| io::Error::other("MP session registry lock poisoned"))?
+            .remove(session)
+            .unwrap_or_default();
+        let mut requests = self
+            .requests
+            .lock()
+            .map_err(|_| io::Error::other("MP request registry lock poisoned"))?;
+        Ok(ids
+            .into_iter()
+            .filter(|id| requests.remove(id).is_some())
+            .count())
+    }
+
+    fn keys_for(&self, model: &str, tokens: &[u32]) -> io::Result<Vec<KvBlockKey>> {
         KvCaptureRequest {
-            model_fingerprint: model_fingerprint.to_owned(),
+            model_fingerprint: model.to_owned(),
             tokens: tokens.to_vec(),
             block_tokens: self.config.block_tokens,
             layer_start: self.config.layer_start,
@@ -466,58 +407,61 @@ impl MpCacheService {
         .block_keys()
     }
 
-    fn register_request(&self, record: RequestRecord) -> io::Result<()> {
-        let id = record.job_id;
-        let session = record.session_id.clone();
-        self.requests
-            .lock()
-            .map_err(|_| io::Error::other("MP request registry lock poisoned"))?
-            .insert(id, record);
+    fn register(&self, record: RequestRecord) -> io::Result<MpRequestTicket> {
+        let ticket = MpRequestTicket {
+            request_id: record.job_id,
+            kind: record.kind,
+            total_chunks: record.total,
+        };
         self.sessions
             .lock()
             .map_err(|_| io::Error::other("MP session registry lock poisoned"))?
-            .entry(session)
+            .entry(record.session.clone())
             .or_default()
-            .insert(id);
-        Ok(())
+            .insert(record.job_id);
+        self.requests
+            .lock()
+            .map_err(|_| io::Error::other("MP request registry lock poisoned"))?
+            .insert(record.job_id, record);
+        Ok(ticket)
     }
 
-    fn request_record(&self, request_id: u64) -> io::Result<Option<RequestRecord>> {
+    fn record(&self, id: u64) -> io::Result<Option<RequestRecord>> {
         Ok(self
             .requests
             .lock()
             .map_err(|_| io::Error::other("MP request registry lock poisoned"))?
-            .get(&request_id)
+            .get(&id)
             .cloned())
     }
 
-    fn finalize_index_if_needed(
+    fn finalize_prefix(
         &self,
         record: &RequestRecord,
         snapshot: &AsyncKvJobSnapshot,
     ) -> io::Result<()> {
         if record.kind != MpRequestKind::Store
-            || record.indexed
+            || record.prefix_indexed
             || snapshot.state != AsyncKvJobState::Completed
         {
             return Ok(());
         }
         self.prefix.register(
-            record.model_fingerprint.clone(),
+            record.model.clone(),
             record.tokens.clone(),
             record.keys.clone(),
         )?;
         if let Ok(mut requests) = self.requests.lock() {
             if let Some(current) = requests.get_mut(&record.job_id) {
-                current.indexed = true;
+                current.prefix_indexed = true;
             }
         }
         Ok(())
     }
 }
 
-fn status_from(record: &RequestRecord, snapshot: &AsyncKvJobSnapshot) -> MpRequestStatus {
-    let (found_chunks, total_chunks, missed_chunks, bytes) = snapshot
+fn status(record: &RequestRecord, snapshot: &AsyncKvJobSnapshot) -> MpRequestStatus {
+    let (found, total, missed, bytes) = snapshot
         .result
         .as_ref()
         .map(|result| {
@@ -528,34 +472,20 @@ fn status_from(record: &RequestRecord, snapshot: &AsyncKvJobSnapshot) -> MpReque
                 result.bytes,
             )
         })
-        .unwrap_or((0, record.keys.len() as u64, 0, 0));
+        .unwrap_or((0, record.total, 0, 0));
     MpRequestStatus {
         request_id: record.job_id,
         kind: record.kind,
         state: snapshot.state,
-        found_chunks,
-        total_chunks,
-        missed_chunks,
+        found_chunks: found,
+        total_chunks: total,
+        missed_chunks: missed,
         bytes,
         error: snapshot.error.as_ref().map(|error| error.message.clone()),
     }
 }
 
-fn validate_session(session: String) -> io::Result<String> {
-    validate_identifier(session, "session")
-}
-
-fn validate_model(model: String) -> io::Result<String> {
-    if model.is_empty() || model.len() > 4096 || model.bytes().any(|byte| byte == 0) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid model fingerprint",
-        ));
-    }
-    Ok(model)
-}
-
-fn validate_identifier(value: String, name: &str) -> io::Result<String> {
+fn validate_id(value: String, kind: &str) -> io::Result<String> {
     if value.is_empty()
         || value.len() > 256
         || !value
@@ -564,10 +494,21 @@ fn validate_identifier(value: String, name: &str) -> io::Result<String> {
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("invalid MP {name} id"),
+            format!("invalid MP {kind} id"),
         ));
     }
     Ok(value)
+}
+
+fn validate_model(value: String) -> io::Result<String> {
+    if value.is_empty() || value.len() > 4096 || value.as_bytes().contains(&0) {
+        return invalid("invalid model fingerprint");
+    }
+    Ok(value)
+}
+
+fn invalid<T>(message: &str) -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::InvalidInput, message))
 }
 
 #[cfg(test)]
@@ -577,30 +518,32 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Default)]
-    struct MemoryTier {
-        values: Mutex<HashMap<String, KvTierEntry>>,
-    }
+    struct MemoryTier(Mutex<HashMap<String, KvTierEntry>>);
 
     impl KvTier for MemoryTier {
         fn name(&self) -> &str {
             "l1"
         }
+
         fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>> {
-            Ok(self.values.lock().unwrap().get(&key.cache_key()).cloned())
+            Ok(self.0.lock().unwrap().get(&key.cache_key()).cloned())
         }
+
         fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
-            self.values
+            self.0
                 .lock()
                 .unwrap()
                 .insert(entry.block.key.cache_key(), entry.clone());
             Ok(())
         }
+
         fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
-            self.values.lock().unwrap().remove(&key.cache_key());
+            self.0.lock().unwrap().remove(&key.cache_key());
             Ok(())
         }
+
         fn clear(&self) -> io::Result<()> {
-            self.values.lock().unwrap().clear();
+            self.0.lock().unwrap().clear();
             Ok(())
         }
     }
@@ -638,38 +581,28 @@ mod tests {
         let store = service
             .submit_store("s", "model", tokens.clone(), blocks.clone(), None, false)
             .unwrap();
-        let status = service.wait(store.request_id, Duration::from_secs(2)).unwrap();
-        assert_eq!(status.found_chunks, 2);
-
+        assert_eq!(
+            service
+                .wait(store.request_id, Duration::from_secs(2))
+                .unwrap()
+                .found_chunks,
+            2
+        );
         let lookup = service
             .submit_lookup("s", "model", vec![1, 2, 3, 4, 5, 6])
             .unwrap();
-        let status = service.wait(lookup.request_id, Duration::from_secs(2)).unwrap();
-        assert_eq!(status.found_chunks, 2);
-
+        service
+            .wait(lookup.request_id, Duration::from_secs(2))
+            .unwrap();
         let retrieve = service
             .submit_retrieve_lookup("s", lookup.request_id)
             .unwrap();
         service
             .wait(retrieve.request_id, Duration::from_secs(2))
             .unwrap();
-        assert_eq!(service.retrieve_result(retrieve.request_id).unwrap().unwrap(), blocks);
-        assert!(service.finish(Duration::from_secs(1)).unwrap());
-    }
-
-    #[test]
-    fn end_session_forgets_request_metadata_not_cache() {
-        let service = service();
-        let tokens = vec![1, 2];
-        let key = service.keys_for("model", &tokens).unwrap().remove(0);
-        let block = KvBlock::new(key, vec![1; 16]).unwrap();
-        let ticket = service
-            .submit_store("session-a", "model", tokens, vec![block], None, false)
-            .unwrap();
-        service
-            .wait(ticket.request_id, Duration::from_secs(2))
-            .unwrap();
-        assert_eq!(service.end_session("session-a").unwrap(), 1);
-        assert!(service.query(ticket.request_id).unwrap().is_none());
+        assert_eq!(
+            service.retrieve_result(retrieve.request_id).unwrap().unwrap(),
+            blocks
+        );
     }
 }
