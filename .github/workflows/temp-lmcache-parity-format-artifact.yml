@@ -1,0 +1,31 @@
+name: Temporary LMCache parity format artifact
+
+on:
+  push:
+    branches: [feat/lmcache-parity-v0.9]
+
+permissions:
+  contents: read
+
+jobs:
+  format-artifact:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Format working copy
+        run: cargo fmt --all
+      - name: Upload formatted Rust sources
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: lmcache-parity-formatted-${{ github.sha }}
+          path: |
+            Cargo.toml
+            src
+          retention-days: 1
