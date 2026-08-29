@@ -1,0 +1,135 @@
+name: NIXL Integration
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  NIXL_SOURCE_SHA: c0a1102b94d173049a5478c23e765ba37681e2ca
+  UCX_SOURCE_SHA: b6a9d47fccce849c28111f05a7fa8f1c930ff17d
+
+jobs:
+  nixl-ucx:
+    name: NIXL / UCX registered-memory transfer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.EXACT_SHA }}
+          persist-credentials: false
+      - name: Verify exact RivetCache revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXACT_SHA"
+          echo "RIVET_EXACT_HEAD=$actual"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Compile optional NIXL surface against upstream stubs
+        run: cargo check --features nixl-stub --bin rivet-cache-nixl-cert
+      - name: Install NIXL and UCX build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake build-essential cmake git libaio-dev libtool liburing-dev \
+            m4 ninja-build pkg-config python3-pip
+          python3 -m pip install --user meson pybind11 tomlkit
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build pinned UCX
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/ucx"
+          git clone --filter=blob:none https://github.com/openucx/ucx.git "$RUNNER_TEMP/ucx-src"
+          cd "$RUNNER_TEMP/ucx-src"
+          git checkout --detach "$UCX_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$UCX_SOURCE_SHA"
+          ./autogen.sh
+          ./contrib/configure-release \
+            --prefix="$prefix" \
+            --enable-shared \
+            --disable-static \
+            --disable-doxygen-doc \
+            --enable-optimizations \
+            --enable-cma \
+            --enable-devel-headers \
+            --enable-mt \
+            --without-cuda
+          make -j"$(nproc)"
+          make install
+          test -f "$prefix/lib/libucp.so" -o -f "$prefix/lib64/libucp.so"
+          echo "UCX_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "UCX_SOURCE_EXACT_SHA=$(git rev-parse HEAD)"
+          "$prefix/bin/ucx_info" -v
+      - name: Build pinned upstream NIXL with UCX only
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/nixl"
+          ucx="$UCX_PREFIX"
+          export PKG_CONFIG_PATH="$ucx/lib/pkgconfig:$ucx/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$ucx/lib:$ucx/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          git clone --filter=blob:none https://github.com/ai-dynamo/nixl.git "$RUNNER_TEMP/nixl-src"
+          cd "$RUNNER_TEMP/nixl-src"
+          git checkout --detach "$NIXL_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$NIXL_SOURCE_SHA"
+          meson setup build \
+            --prefix="$prefix" \
+            -Denable_plugins=UCX \
+            -Dbuild_tests=false \
+            -Dbuild_examples=false \
+            -Dbuild_docs=false \
+            -Dwith_trace=false \
+            -Drust=false
+          ninja -C build
+          ninja -C build install
+
+          plugin="$(find "$prefix" -type f \( -name '*ucx*.so' -o -name '*UCX*.so' \) | head -n 1)"
+          test -n "$plugin"
+          plugin_dir="$(dirname "$plugin")"
+          nixl_lib_dirs="$(find "$prefix" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)"
+          ucx_lib_dirs="$(find "$ucx" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)"
+          test -n "$nixl_lib_dirs"
+          test -n "$ucx_lib_dirs"
+
+          echo "NIXL_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "NIXL_PLUGIN_DIR=$plugin_dir" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$nixl_lib_dirs:$ucx_lib_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig:$prefix/lib/x86_64-linux-gnu/pkgconfig:$ucx/lib/pkgconfig:$ucx/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "NIXL_SOURCE_EXACT_SHA=$(git rev-parse HEAD)"
+          echo "NIXL_PLUGIN_DIR=$plugin_dir"
+      - name: Certify real NIXL UCX prefill-to-decode transfer
+        shell: bash
+        env:
+          RIVET_NIXL_CERT_BYTES: '8388608'
+          NIXL_LOG_LEVEL: INFO
+          RUST_BACKTRACE: '1'
+        run: |
+          set -euo pipefail
+          cargo run --release --features nixl --bin rivet-cache-nixl-cert 2>&1 | tee nixl-cert.log
+          grep -F 'RIVET_NIXL_UCX=PASS' nixl-cert.log
+          grep -F 'RIVET_NIXL_METADATA=PASS' nixl-cert.log
+          grep -F 'RIVET_V08_NIXL_CERT=PASS' nixl-cert.log
+      - name: Preserve NIXL certification log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nixl-cert-${{ env.EXACT_SHA }}
+          path: nixl-cert.log
+          if-no-files-found: warn
+          retention-days: 7
+      - name: NIXL feature lint
+        run: cargo clippy --features nixl --bin rivet-cache-nixl-cert -- -D warnings

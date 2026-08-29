@@ -1,0 +1,83 @@
+name: AMD Interoperability
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  RIFTGPU_SHA: a154537b50aea48fb32125e7460b693c4fe9569f
+
+jobs:
+  rx6800xt:
+    name: AMD / RX 6800 XT HIP + Vulkan-HIP
+    runs-on: [self-hosted, Windows, X64, TECH-ps5-rs-dreaming]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.EXACT_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve host Rust toolchain and exact RivetCache revision
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXACT_SHA) { throw "RivetCache checkout mismatch: $actual != $env:EXACT_SHA" }
+
+          $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+          if (-not $cargo) {
+            $candidate = Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe'
+            if (Test-Path -LiteralPath $candidate) { $cargo = Get-Item -LiteralPath $candidate }
+          }
+          if (-not $cargo) { throw 'cargo.exe is not available on the AMD certification host' }
+          $cargoPath = [string]$cargo.Source
+          if (-not $cargoPath) { $cargoPath = [string]$cargo.FullName }
+          "CARGO_EXE=$cargoPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & $cargoPath --version
+          Write-Host "RIVET_EXACT_HEAD=$actual"
+      - name: Certify RivetCache native HIP device transfer
+        shell: powershell
+        env:
+          RIVET_AMD_CERT_BYTES: '67108864'
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          & $env:CARGO_EXE run --release --example v07-amd-hardware-cert | Tee-Object -FilePath rivet-amd-cert.log
+          if (-not (Select-String -LiteralPath rivet-amd-cert.log -SimpleMatch 'RIVET_V07_HIP_D2D=PASS')) { throw 'Missing HIP D2D receipt' }
+          if (-not (Select-String -LiteralPath rivet-amd-cert.log -SimpleMatch 'RIVET_V07_AMD_HARDWARE_CERT=PASS')) { throw 'Missing RivetCache AMD hardware receipt' }
+      - name: Certify exact RiftGPU Vulkan to HIP external-memory bridge
+        shell: powershell
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $root = "D:\rghw-$env:GITHUB_RUN_ID"
+          if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+          git clone --no-checkout https://github.com/techmad220/RiftGPU.git $root
+          Push-Location $root
+          try {
+            git checkout --detach $env:RIFTGPU_SHA
+            $actual = (git rev-parse HEAD).Trim()
+            if ($actual -ne $env:RIFTGPU_SHA) { throw "RiftGPU checkout mismatch: $actual != $env:RIFTGPU_SHA" }
+            $env:VRB_REQUIRE_AMD_E2E = '1'
+            $env:VRB_MAX_SMOKE_BYTES = '268435456'
+            & $env:CARGO_EXE test --release -p vrb-backends --test hardware_e2e -- --nocapture --test-threads=1 | Tee-Object -FilePath "$env:RUNNER_TEMP\riftgpu-amd-cert.log"
+            if (-not (Select-String -LiteralPath "$env:RUNNER_TEMP\riftgpu-amd-cert.log" -SimpleMatch 'VRB_E2E_CERT=PASS')) { throw 'Missing RiftGPU hardware receipt' }
+            Write-Host "RIFTGPU_EXACT_SHA=$actual"
+          }
+          finally {
+            Pop-Location
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          }
+      - name: Seal AMD exact-head receipt
+        shell: powershell
+        run: |
+          Write-Host "RIVET_V08_AMD_INTEROP=PASS sha=$env:EXACT_SHA riftgpu=$env:RIFTGPU_SHA"
