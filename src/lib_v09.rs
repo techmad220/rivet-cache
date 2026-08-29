@@ -24,6 +24,6 @@ pub use mp::{
 pub use runtime_control::{RuntimeCacheController, RuntimeHealthResult, RuntimeLookupResult};
 pub use sdk_tier::{NativeKvSdk, NativeSdkKvTier};
 pub use vllm::{
-    FfiVllmKvApi, VllmAdapter, VllmFfiOps, VllmHealthFn, VllmKvApi, VllmKvSlice,
-    VllmReadKvFn, VllmRecomputeFn, VllmWriteKvFn,
+    FfiVllmKvApi, VllmAdapter, VllmFfiOps, VllmHealthFn, VllmKvApi, VllmKvSlice, VllmReadKvFn,
+    VllmRecomputeFn, VllmWriteKvFn,
 };
