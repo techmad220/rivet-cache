@@ -207,3 +207,21 @@ CI runs these gates on Linux, Windows, and macOS.
 ## License
 
 MIT.
+
+## Distributed/runtime KV layer
+
+RivetCache includes optional execution adapters around the DI-first cache core:
+
+- `TcpKvServer` + `TcpKvTier`: a standalone binary TCP KV service/client for cross-process or cross-host cache sharing. The bundled protocol intentionally does not embed authentication or TLS; use it only on trusted application networks or behind an authenticated/tunneled boundary.
+- `DeviceKvTier`: stores KV payloads in buffers owned by an injected `DeviceMemory` implementation. `FfiDeviceMemory` exposes an unsafe callback ABI that accelerator integrations can implement without linking a GPU SDK into the core crate.
+- `LlamaCppAdapter`: a host-callback adapter that maps RivetCache block ranges to capture/restore callbacks supplied by an embedding llama.cpp host. This callback contract is a RivetCache integration surface and does not claim compatibility with an upstream private/internal ABI.
+- `SegmentIndex`: finds exact contiguous token matches at non-prefix positions, aligns them to complete cached blocks, and can restore those blocks at a relocated token position through `RelocatableRuntimeKvAdapter`.
+- `KvEngine::health`, `KvEngine::clear`, and `KvEngine::set_pinned` provide direct management operations across configured tiers.
+
+The standalone server can be started with:
+
+```text
+cargo run --bin rivet-cache-server -- 127.0.0.1:65432 ./rivet-cache-data 512 8192
+```
+
+Public capability claims are limited to code paths implemented and tested in this repository. Hardware throughput, a specific external runtime build, transport interoperability outside the RivetCache protocol, and comparative performance require separate implementation-specific evidence.

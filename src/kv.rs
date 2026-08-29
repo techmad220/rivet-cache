@@ -102,6 +102,15 @@ pub trait KvTier: Send + Sync {
     fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>>;
     fn put(&self, entry: &KvTierEntry) -> io::Result<()>;
     fn remove(&self, key: &KvBlockKey) -> io::Result<()>;
+    fn clear(&self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("KV tier {} does not implement clear", self.name()),
+        ))
+    }
+    fn health(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct ContextCacheTier {
@@ -146,6 +155,10 @@ impl KvTier for ContextCacheTier {
 
     fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
         self.cache.invalidate(&key.cache_key())
+    }
+
+    fn clear(&self) -> io::Result<()> {
+        self.cache.clear()
     }
 }
 
@@ -192,6 +205,13 @@ pub enum KvWritePolicy {
     #[default]
     Primary,
     All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KvTierHealth {
+    pub name: String,
+    pub healthy: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -537,6 +557,60 @@ impl KvEngine {
         let mut stats = self.stats_mut()?;
         stats.invalidations = stats.invalidations.saturating_add(1);
         Ok(())
+    }
+
+    pub fn set_pinned(&self, key: &KvBlockKey, pinned: bool) -> io::Result<bool> {
+        let now = self.inner.clock.now_seconds();
+        let mut found = false;
+        for tier in &self.inner.tiers {
+            let Some(mut entry) = tier.get(key)? else {
+                continue;
+            };
+            if is_expired(entry.expires_at, now) {
+                tier.remove(key)?;
+                let mut stats = self.stats_mut()?;
+                stats.expirations = stats.expirations.saturating_add(1);
+                continue;
+            }
+            entry.pinned = pinned;
+            tier.put(&entry)?;
+            found = true;
+        }
+        Ok(found)
+    }
+
+    pub fn clear(&self) -> io::Result<()> {
+        let mut first_error = None;
+        for tier in &self.inner.tiers {
+            if let Err(error) = tier.clear() {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub fn health(&self) -> Vec<KvTierHealth> {
+        self.inner
+            .tiers
+            .iter()
+            .map(|tier| match tier.health() {
+                Ok(()) => KvTierHealth {
+                    name: tier.name().to_string(),
+                    healthy: true,
+                    error: None,
+                },
+                Err(error) => KvTierHealth {
+                    name: tier.name().to_string(),
+                    healthy: false,
+                    error: Some(error.to_string()),
+                },
+            })
+            .collect()
     }
 
     pub fn prefetch_to(&self, keys: Vec<KvBlockKey>, destination_index: usize) -> KvPrefetch {

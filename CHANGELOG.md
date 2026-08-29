@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 - 2026-08-28
+
+- Added a standalone std-only TCP KV service and `TcpKvTier` client with bounded payloads, connection limits, timeouts, health checks, clear, get, put, and remove operations.
+- Added `DeviceKvTier`, a device-buffer ownership layer, a host reference backend, and an unsafe opt-in FFI callback bridge for accelerator runtimes.
+- Added a llama.cpp host-callback runtime adapter with capture, restore, health, and relocated restore for exact reusable segments.
+- Added `SegmentIndex` and `restore_reuse` for deterministic block-aligned non-prefix exact segment reuse.
+- Added tier health, clear, and pin/unpin control operations to `KvEngine`.
+- Kept network/device/runtime integrations optional and dependency-injected; the core remains free of mandatory async, networking framework, GPU SDK, or inference-engine dependencies.
+
 ## 0.4.0 - 2026-08-28
 
 - Added runtime-neutral KV block identities scoped by model, token prefix, layer range, block range, and layout version.

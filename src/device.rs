@@ -109,23 +109,12 @@ impl DeviceMemory for HostDeviceMemory {
     }
 }
 
-pub type DeviceAllocFn = unsafe extern "C" fn(
-    context: *mut c_void,
-    len: usize,
-    out_handle: *mut u64,
-) -> i32;
-pub type DeviceUploadFn = unsafe extern "C" fn(
-    context: *mut c_void,
-    handle: u64,
-    bytes: *const u8,
-    len: usize,
-) -> i32;
-pub type DeviceDownloadFn = unsafe extern "C" fn(
-    context: *mut c_void,
-    handle: u64,
-    bytes: *mut u8,
-    len: usize,
-) -> i32;
+pub type DeviceAllocFn =
+    unsafe extern "C" fn(context: *mut c_void, len: usize, out_handle: *mut u64) -> i32;
+pub type DeviceUploadFn =
+    unsafe extern "C" fn(context: *mut c_void, handle: u64, bytes: *const u8, len: usize) -> i32;
+pub type DeviceDownloadFn =
+    unsafe extern "C" fn(context: *mut c_void, handle: u64, bytes: *mut u8, len: usize) -> i32;
 pub type DeviceFreeFn = unsafe extern "C" fn(context: *mut c_void, handle: u64) -> i32;
 pub type DeviceHealthFn = unsafe extern "C" fn(context: *mut c_void) -> i32;
 
@@ -210,12 +199,7 @@ impl DeviceMemory for FfiDeviceMemory {
             ));
         }
         let code = unsafe {
-            (self.ops.upload)(
-                self.ops.context,
-                buffer.handle,
-                bytes.as_ptr(),
-                bytes.len(),
-            )
+            (self.ops.upload)(self.ops.context, buffer.handle, bytes.as_ptr(), bytes.len())
         };
         self.check("upload", code)
     }
@@ -432,9 +416,15 @@ mod tests {
         tier.put(&entry).expect("put");
         assert_eq!(tier.len().expect("len"), 1);
         assert!(!tier.is_empty().expect("is_empty"));
-        assert_eq!(tier.get(&entry.block.key).expect("get"), Some(entry.clone()));
+        assert_eq!(
+            tier.get(&entry.block.key).expect("get"),
+            Some(entry.clone())
+        );
         tier.remove(&entry.block.key).expect("remove");
         assert!(tier.is_empty().expect("is_empty after remove"));
-        assert!(tier.get(&entry.block.key).expect("get after remove").is_none());
+        assert!(tier
+            .get(&entry.block.key)
+            .expect("get after remove")
+            .is_none());
     }
 }

@@ -31,7 +31,10 @@ fn main() -> io::Result<()> {
     )?);
     let tier: Arc<dyn KvTier> = Arc::new(ContextCacheTier::new("server-cache", cache)?);
     let server = TcpKvServer::spawn(&bind, tier, RemoteLimits::default())?;
-    eprintln!("RivetCache TCP KV server listening on {}", server.local_addr());
+    eprintln!(
+        "RivetCache TCP KV server listening on {}",
+        server.local_addr()
+    );
     eprintln!("Protocol is intended for trusted application networks; terminate or tunnel it at an authenticated boundary when crossing trust zones.");
 
     loop {

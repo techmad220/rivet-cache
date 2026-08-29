@@ -252,13 +252,25 @@ impl RelocatableRuntimeKvAdapter for LlamaCppAdapter {
         let source_start = blocks
             .first()
             .map(|block| block.key.token_start)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no KV blocks to restore"))?;
-        for block in blocks {
-            let relative = block.key.token_start.checked_sub(source_start).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "KV blocks are not token ordered")
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no KV blocks to restore")
             })?;
+        for block in blocks {
+            let relative = block
+                .key
+                .token_start
+                .checked_sub(source_start)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "KV blocks are not token ordered",
+                    )
+                })?;
             let token_start = target_token_start.checked_add(relative).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "relocated token range overflow")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relocated token range overflow",
+                )
             })?;
             let slice = LlamaKvSlice {
                 token_start,
@@ -388,6 +400,9 @@ mod tests {
             layer_count: 8,
             layout_version: 1,
         };
-        assert_eq!(api.restored(relocated).expect("relocated"), Some(vec![2, 9]));
+        assert_eq!(
+            api.restored(relocated).expect("relocated"),
+            Some(vec![2, 9])
+        );
     }
 }

@@ -296,10 +296,12 @@ fn validate_limits(limits: RemoteLimits) -> io::Result<()> {
 }
 
 fn resolve_one(address: impl ToSocketAddrs) -> io::Result<SocketAddr> {
-    address
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "address resolved to no endpoints"))
+    address.to_socket_addrs()?.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "address resolved to no endpoints",
+        )
+    })
 }
 
 fn configure_stream(stream: &TcpStream, timeout: Duration) -> io::Result<()> {
@@ -356,7 +358,9 @@ fn write_error_response(stream: &mut TcpStream, message: &str) -> io::Result<()>
 fn read_remote_error(stream: &mut TcpStream) -> io::Result<io::Error> {
     let len = read_u32(stream)? as usize;
     if len > MAX_ERROR_BYTES {
-        return Err(protocol_error("remote error message exceeds protocol limit"));
+        return Err(protocol_error(
+            "remote error message exceeds protocol limit",
+        ));
     }
     let mut bytes = vec![0_u8; len];
     stream.read_exact(&mut bytes)?;
@@ -407,7 +411,9 @@ fn read_key(stream: &mut TcpStream, limits: RemoteLimits) -> io::Result<KvBlockK
     let layer_count = read_u32(stream)?;
     let layout_version = read_u32(stream)?;
     if token_count == 0 || layer_count == 0 {
-        return Err(protocol_error("remote KV key has an empty token or layer range"));
+        return Err(protocol_error(
+            "remote KV key has an empty token or layer range",
+        ));
     }
     Ok(KvBlockKey {
         model_fingerprint,
@@ -523,10 +529,10 @@ mod tests {
                 .expect("cache"),
         );
         let local: Arc<dyn KvTier> = Arc::new(ContextCacheTier::new("local", cache).expect("tier"));
-        let server = TcpKvServer::spawn("127.0.0.1:0", local, RemoteLimits::default())
-            .expect("server");
-        let remote = TcpKvTier::new("remote", server.local_addr(), RemoteLimits::default())
-            .expect("remote");
+        let server =
+            TcpKvServer::spawn("127.0.0.1:0", local, RemoteLimits::default()).expect("server");
+        let remote =
+            TcpKvTier::new("remote", server.local_addr(), RemoteLimits::default()).expect("remote");
         remote.ping().expect("ping");
 
         let entry = KvTierEntry {
@@ -538,9 +544,15 @@ mod tests {
             pinned: true,
         };
         remote.put(&entry).expect("put");
-        assert_eq!(remote.get(&entry.block.key).expect("get"), Some(entry.clone()));
+        assert_eq!(
+            remote.get(&entry.block.key).expect("get"),
+            Some(entry.clone())
+        );
         remote.clear().expect("clear");
-        assert!(remote.get(&entry.block.key).expect("get after clear").is_none());
+        assert!(remote
+            .get(&entry.block.key)
+            .expect("get after clear")
+            .is_none());
         server.stop().expect("stop");
     }
 }
