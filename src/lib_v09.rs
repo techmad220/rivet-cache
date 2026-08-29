@@ -5,6 +5,7 @@ mod events;
 mod mooncake;
 mod mp;
 mod runtime_control;
+mod sdk_tier;
 mod vllm;
 
 pub use async_runtime::{
@@ -21,6 +22,7 @@ pub use mp::{
     MpTransferMode,
 };
 pub use runtime_control::{RuntimeCacheController, RuntimeHealthResult, RuntimeLookupResult};
+pub use sdk_tier::{NativeKvSdk, NativeSdkKvTier};
 pub use vllm::{
     FfiVllmKvApi, VllmAdapter, VllmFfiOps, VllmHealthFn, VllmKvApi, VllmKvSlice,
     VllmReadKvFn, VllmRecomputeFn, VllmWriteKvFn,
