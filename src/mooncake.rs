@@ -1,10 +1,6 @@
-use crate::{KvBlock, KvBlockKey, KvTier, KvTierEntry};
-use sha2::{Digest, Sha256};
-use std::ffi::CString;
+use crate::{KvBlockKey, KvTier, KvTierEntry, NativeKvSdk, NativeSdkKvTier};
 use std::io;
 use std::sync::Arc;
-
-const FRAME_MAGIC: &[u8; 8] = b"RIVEMC1\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MooncakeInit {
@@ -36,13 +32,10 @@ pub struct MooncakeConfig {
 
 impl MooncakeConfig {
     pub fn validate(&self) -> io::Result<()> {
-        validate_identifier(&self.name, "tier name")?;
-        validate_identifier(&self.namespace, "namespace")?;
+        validate_id(&self.name, "tier name")?;
+        validate_id(&self.namespace, "namespace")?;
         if self.max_value_bytes == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Mooncake max value bytes must be greater than zero",
-            ));
+            return invalid("Mooncake max value bytes must be greater than zero");
         }
         match &self.init {
             MooncakeInit::Setup {
@@ -58,34 +51,17 @@ impl MooncakeConfig {
                     ("protocol", protocol),
                     ("master server", master_server_addr),
                 ] {
-                    if value.trim().is_empty() || value.as_bytes().contains(&0) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("Mooncake {name} is invalid"),
-                        ));
-                    }
+                    validate_c_string(value, name)?;
                 }
             }
-            MooncakeInit::InitAll { protocol, .. } => {
-                if protocol.trim().is_empty() || protocol.as_bytes().contains(&0) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Mooncake protocol is invalid",
-                    ));
-                }
-            }
+            MooncakeInit::InitAll { protocol, .. } => validate_c_string(protocol, "protocol")?,
         }
         Ok(())
     }
 }
 
 pub struct MooncakeKvTier {
-    name: String,
-    namespace: String,
-    force_remove: bool,
-    max_value_bytes: usize,
-    #[cfg(target_os = "linux")]
-    client: Arc<native::MooncakeClient>,
+    inner: NativeSdkKvTier,
 }
 
 impl MooncakeKvTier {
@@ -93,197 +69,57 @@ impl MooncakeKvTier {
         config.validate()?;
         #[cfg(target_os = "linux")]
         {
-            let client = native::MooncakeClient::connect(&config)?;
-            return Ok(Self {
-                name: config.name,
-                namespace: config.namespace,
-                force_remove: config.force_remove,
-                max_value_bytes: config.max_value_bytes,
-                client: Arc::new(client),
-            });
+            let sdk = Arc::new(native::MooncakeSdk::connect(&config)?);
+            let inner = NativeSdkKvTier::new(
+                config.name,
+                config.namespace,
+                config.max_value_bytes,
+                sdk,
+            )?;
+            Ok(Self { inner })
         }
         #[cfg(not(target_os = "linux"))]
         {
             let _ = config;
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "Mooncake Store native tier is currently supported on Linux hosts",
+                "native Mooncake Store is currently supported on Linux hosts",
             ))
         }
     }
 
-    fn object_key(&self, key: &KvBlockKey) -> String {
-        format!("rivet:{}:{}", self.namespace, key.cache_key())
-    }
-
-    fn namespace_regex(&self) -> String {
-        format!("^rivet:{}:", self.namespace)
+    pub fn sdk_name(&self) -> &str {
+        self.inner.sdk_name()
     }
 }
 
 impl KvTier for MooncakeKvTier {
     fn name(&self) -> &str {
-        &self.name
+        self.inner.name()
     }
 
     fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>> {
-        #[cfg(target_os = "linux")]
-        {
-            let object_key = self.object_key(key);
-            let Some(raw) = self.client.get(&object_key, self.max_value_bytes)? else {
-                return Ok(None);
-            };
-            decode_entry(key.clone(), &raw, self.max_value_bytes).map(Some)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = key;
-            unsupported()
-        }
+        self.inner.get(key)
     }
 
     fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            let encoded = encode_entry(entry)?;
-            if encoded.len() > self.max_value_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Mooncake KV entry exceeds configured limit",
-                ));
-            }
-            let object_key = self.object_key(&entry.block.key);
-            self.client.upsert_copy(&object_key, &encoded, self.force_remove)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = entry;
-            unsupported()
-        }
+        self.inner.put(entry)
     }
 
     fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            self.client
-                .remove(&self.object_key(key), self.force_remove)
-                .map(|_| ())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = key;
-            unsupported()
-        }
+        self.inner.remove(key)
     }
 
     fn clear(&self) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            self.client
-                .remove_regex(&self.namespace_regex(), self.force_remove)
-                .map(|_| ())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            unsupported()
-        }
+        self.inner.clear()
     }
 
     fn health(&self) -> io::Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            self.client.health()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            unsupported()
-        }
+        self.inner.health()
     }
 }
 
-fn encode_entry(entry: &KvTierEntry) -> io::Result<Vec<u8>> {
-    if entry.block.bytes.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Mooncake KV payload must not be empty",
-        ));
-    }
-    let digest: [u8; 32] = Sha256::digest(&entry.block.bytes).into();
-    let mut encoded = Vec::with_capacity(8 + 8 + 1 + 8 + 32 + entry.block.bytes.len());
-    encoded.extend_from_slice(FRAME_MAGIC);
-    encoded.extend_from_slice(&entry.expires_at.to_le_bytes());
-    encoded.push(u8::from(entry.pinned));
-    encoded.extend_from_slice(&(entry.block.bytes.len() as u64).to_le_bytes());
-    encoded.extend_from_slice(&digest);
-    encoded.extend_from_slice(&entry.block.bytes);
-    Ok(encoded)
-}
-
-fn decode_entry(key: KvBlockKey, bytes: &[u8], max_value_bytes: usize) -> io::Result<KvTierEntry> {
-    let header = FRAME_MAGIC.len() + 8 + 1 + 8 + 32;
-    if bytes.len() < header || bytes.len() > max_value_bytes || &bytes[..8] != FRAME_MAGIC {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid Mooncake RivetCache frame",
-        ));
-    }
-    let mut cursor = FRAME_MAGIC.len();
-    let expires_at = read_u64(bytes, &mut cursor)?;
-    let pinned = match bytes.get(cursor).copied() {
-        Some(0) => false,
-        Some(1) => true,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid Mooncake pin flag",
-            ))
-        }
-    };
-    cursor += 1;
-    let payload_len = usize::try_from(read_u64(bytes, &mut cursor)?).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "Mooncake payload length overflow")
-    })?;
-    if bytes.len().saturating_sub(cursor) < 32 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "Mooncake checksum is truncated",
-        ));
-    }
-    let expected = &bytes[cursor..cursor + 32];
-    cursor += 32;
-    if bytes.len().saturating_sub(cursor) != payload_len || payload_len == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Mooncake payload length mismatch",
-        ));
-    }
-    let payload = bytes[cursor..].to_vec();
-    let actual: [u8; 32] = Sha256::digest(&payload).into();
-    if actual.as_slice() != expected {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Mooncake payload checksum mismatch",
-        ));
-    }
-    Ok(KvTierEntry {
-        block: KvBlock::new(key, payload)?,
-        expires_at,
-        pinned,
-    })
-}
-
-fn read_u64(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
-    let end = cursor.saturating_add(8);
-    let raw = bytes.get(*cursor..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::UnexpectedEof, "Mooncake frame is truncated")
-    })?;
-    *cursor = end;
-    let mut value = [0_u8; 8];
-    value.copy_from_slice(raw);
-    Ok(u64::from_le_bytes(value))
-}
-
-fn validate_identifier(value: &str, name: &str) -> io::Result<()> {
+fn validate_id(value: &str, name: &str) -> io::Result<()> {
     if value.is_empty()
         || value.len() > 128
         || !value
@@ -298,22 +134,27 @@ fn validate_identifier(value: &str, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn unsupported<T>() -> io::Result<T> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Mooncake Store native tier is currently supported on Linux hosts",
-    ))
+fn validate_c_string(value: &str, name: &str) -> io::Result<()> {
+    if value.trim().is_empty() || value.as_bytes().contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid Mooncake {name}"),
+        ));
+    }
+    Ok(())
+}
+
+fn invalid<T>(message: &str) -> io::Result<T> {
+    Err(io::Error::new(io::ErrorKind::InvalidInput, message))
 }
 
 #[cfg(target_os = "linux")]
 mod native {
     use super::*;
-    use std::ffi::{c_char, c_void};
-    use std::sync::Mutex;
+    use std::ffi::{c_char, c_void, CStr, CString};
+    use std::sync::{Mutex, MutexGuard};
 
     const RTLD_NOW: i32 = 2;
-
     type Store = *mut c_void;
     type CreateFn = unsafe extern "C" fn() -> Store;
     type DestroyFn = unsafe extern "C" fn(Store);
@@ -329,7 +170,8 @@ mod native {
     ) -> i32;
     type InitAllFn = unsafe extern "C" fn(Store, *const c_char, *const c_char, u64) -> i32;
     type HealthFn = unsafe extern "C" fn(Store) -> i32;
-    type PutFn = unsafe extern "C" fn(Store, *const c_char, *const c_void, usize, *const c_void) -> i32;
+    type PutFn =
+        unsafe extern "C" fn(Store, *const c_char, *const c_void, usize, *const c_void) -> i32;
     type GetIntoFn = unsafe extern "C" fn(Store, *const c_char, *mut c_void, usize) -> i64;
     type ExistFn = unsafe extern "C" fn(Store, *const c_char) -> i32;
     type GetSizeFn = unsafe extern "C" fn(Store, *const c_char) -> i64;
@@ -359,17 +201,18 @@ mod native {
         remove_regex: RemoveRegexFn,
     }
 
-    struct Inner {
-        store: usize,
+    struct StoreState {
+        handle: usize,
     }
 
-    pub struct MooncakeClient {
+    pub struct MooncakeSdk {
         library: usize,
         api: Api,
-        inner: Mutex<Inner>,
+        store: Mutex<StoreState>,
+        force_remove: bool,
     }
 
-    impl MooncakeClient {
+    impl MooncakeSdk {
         pub fn connect(config: &MooncakeConfig) -> io::Result<Self> {
             let path = config
                 .library_path
@@ -384,7 +227,6 @@ mod native {
                     format!("failed to load Mooncake Store library: {}", dl_error()),
                 ));
             }
-
             let api = match unsafe { Api::load(library) } {
                 Ok(api) => api,
                 Err(error) => {
@@ -401,48 +243,56 @@ mod native {
                 }
                 return Err(io::Error::other("Mooncake Store create returned null"));
             }
-
-            let init_result = init_store(store, api, &config.init);
-            if let Err(error) = init_result {
+            if let Err(error) = initialize(store, api, &config.init) {
                 unsafe {
                     (api.destroy)(store);
                     dlclose(library);
                 }
                 return Err(error);
             }
-
-            let client = Self {
+            let sdk = Self {
                 library: library as usize,
                 api,
-                inner: Mutex::new(Inner {
-                    store: store as usize,
+                store: Mutex::new(StoreState {
+                    handle: store as usize,
                 }),
+                force_remove: config.force_remove,
             };
-            client.health()?;
-            Ok(client)
+            sdk.health()?;
+            Ok(sdk)
         }
 
-        pub fn health(&self) -> io::Result<()> {
-            let inner = self.lock()?;
-            check_zero(
-                unsafe { (self.api.health)(inner.store as Store) },
-                "health_check",
-            )
+        fn lock(&self) -> io::Result<MutexGuard<'_, StoreState>> {
+            self.store
+                .lock()
+                .map_err(|_| io::Error::other("Mooncake Store lock poisoned"))
         }
 
-        pub fn get(&self, key: &str, max: usize) -> io::Result<Option<Vec<u8>>> {
+        fn exists(&self, store: Store, key: &CString) -> io::Result<bool> {
+            let status = unsafe { (self.api.exist)(store, key.as_ptr()) };
+            match status {
+                0 => Ok(false),
+                1 => Ok(true),
+                other => Err(io::Error::other(format!(
+                    "Mooncake is_exist returned status {other}"
+                ))),
+            }
+        }
+    }
+
+    impl NativeKvSdk for MooncakeSdk {
+        fn name(&self) -> &str {
+            "mooncake-store"
+        }
+
+        fn get(&self, key: &str, max_bytes: usize) -> io::Result<Option<Vec<u8>>> {
             let key = cstring(key, "key")?;
-            let inner = self.lock()?;
-            let exists = unsafe { (self.api.exist)(inner.store as Store, key.as_ptr()) };
-            if exists == 0 {
+            let guard = self.lock()?;
+            let store = guard.handle as Store;
+            if !self.exists(store, &key)? {
                 return Ok(None);
             }
-            if exists < 0 {
-                return Err(io::Error::other(format!(
-                    "Mooncake is_exist failed with status {exists}"
-                )));
-            }
-            let size = unsafe { (self.api.get_size)(inner.store as Store, key.as_ptr()) };
+            let size = unsafe { (self.api.get_size)(store, key.as_ptr()) };
             if size <= 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -452,7 +302,7 @@ mod native {
             let size = usize::try_from(size).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "Mooncake object size overflow")
             })?;
-            if size > max {
+            if size > max_bytes {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Mooncake object exceeds configured value limit",
@@ -461,47 +311,41 @@ mod native {
             let mut bytes = vec![0_u8; size];
             let read = unsafe {
                 (self.api.get_into)(
-                    inner.store as Store,
+                    store,
                     key.as_ptr(),
                     bytes.as_mut_ptr().cast::<c_void>(),
                     bytes.len(),
                 )
             };
-            if read < 0 {
+            if read <= 0 {
                 return Err(io::Error::other(format!(
-                    "Mooncake get_into failed with status {read}"
+                    "Mooncake get_into returned {read}"
                 )));
             }
             let read = usize::try_from(read).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "Mooncake read size overflow")
             })?;
-            if read == 0 || read > bytes.len() {
+            if read > bytes.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Mooncake get_into returned an invalid byte count",
+                    "Mooncake get_into exceeded the destination buffer",
                 ));
             }
             bytes.truncate(read);
             Ok(Some(bytes))
         }
 
-        pub fn upsert_copy(&self, key: &str, value: &[u8], force_remove: bool) -> io::Result<()> {
-            let key = cstring(key, "key")?;
-            let inner = self.lock()?;
-            let exists = unsafe { (self.api.exist)(inner.store as Store, key.as_ptr()) };
-            if exists < 0 {
-                return Err(io::Error::other(format!(
-                    "Mooncake is_exist failed with status {exists}"
-                )));
+        fn put(&self, key: &str, value: &[u8]) -> io::Result<()> {
+            if value.is_empty() {
+                return invalid("Mooncake put payload must not be empty");
             }
-            if exists == 1 {
+            let key = cstring(key, "key")?;
+            let guard = self.lock()?;
+            let store = guard.handle as Store;
+            if self.exists(store, &key)? {
                 check_zero(
                     unsafe {
-                        (self.api.remove)(
-                            inner.store as Store,
-                            key.as_ptr(),
-                            i32::from(force_remove),
-                        )
+                        (self.api.remove)(store, key.as_ptr(), i32::from(self.force_remove))
                     },
                     "remove-before-put",
                 )?;
@@ -509,7 +353,7 @@ mod native {
             check_zero(
                 unsafe {
                     (self.api.put)(
-                        inner.store as Store,
+                        store,
                         key.as_ptr(),
                         value.as_ptr().cast::<c_void>(),
                         value.len(),
@@ -520,56 +364,55 @@ mod native {
             )
         }
 
-        pub fn remove(&self, key: &str, force: bool) -> io::Result<i32> {
+        fn remove(&self, key: &str) -> io::Result<()> {
             let key = cstring(key, "key")?;
-            let inner = self.lock()?;
-            let status = unsafe {
-                (self.api.remove)(inner.store as Store, key.as_ptr(), i32::from(force))
-            };
-            if status == 0 {
-                Ok(status)
-            } else {
-                let exists = unsafe { (self.api.exist)(inner.store as Store, key.as_ptr()) };
-                if exists == 0 {
-                    Ok(0)
-                } else {
-                    Err(io::Error::other(format!(
-                        "Mooncake remove failed with status {status}"
-                    )))
-                }
+            let guard = self.lock()?;
+            let store = guard.handle as Store;
+            if !self.exists(store, &key)? {
+                return Ok(());
             }
+            check_zero(
+                unsafe { (self.api.remove)(store, key.as_ptr(), i32::from(self.force_remove)) },
+                "remove",
+            )
         }
 
-        pub fn remove_regex(&self, regex: &str, force: bool) -> io::Result<i64> {
-            let regex = cstring(regex, "regex")?;
-            let inner = self.lock()?;
+        fn clear_prefix(&self, prefix: &str) -> io::Result<()> {
+            let pattern = cstring(&format!("^{}", regex_escape(prefix)), "prefix regex")?;
+            let guard = self.lock()?;
             let removed = unsafe {
-                (self.api.remove_regex)(inner.store as Store, regex.as_ptr(), i32::from(force))
+                (self.api.remove_regex)(
+                    guard.handle as Store,
+                    pattern.as_ptr(),
+                    i32::from(self.force_remove),
+                )
             };
             if removed < 0 {
                 Err(io::Error::other(format!(
-                    "Mooncake remove_by_regex failed with status {removed}"
+                    "Mooncake remove_by_regex returned {removed}"
                 )))
             } else {
-                Ok(removed)
+                Ok(())
             }
         }
 
-        fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, Inner>> {
-            self.inner
-                .lock()
-                .map_err(|_| io::Error::other("Mooncake client lock poisoned"))
+        fn health(&self) -> io::Result<()> {
+            let guard = self.lock()?;
+            check_zero(
+                unsafe { (self.api.health)(guard.handle as Store) },
+                "health_check",
+            )
         }
     }
 
-    impl Drop for MooncakeClient {
+    impl Drop for MooncakeSdk {
         fn drop(&mut self) {
-            let store = match self.inner.get_mut() {
-                Ok(inner) => inner.store,
-                Err(poisoned) => poisoned.into_inner().store,
+            let handle = match self.store.get_mut() {
+                Ok(store) => store.handle,
+                Err(poisoned) => poisoned.into_inner().handle,
             };
             unsafe {
-                (self.api.destroy)(store as Store);
+                (self.api.destroy)(handle as Store);
                 dlclose(self.library as *mut c_void);
             }
         }
@@ -577,35 +420,41 @@ mod native {
 
     impl Api {
         unsafe fn load(library: *mut c_void) -> io::Result<Self> {
-            macro_rules! symbol {
-                ($name:literal, $ty:ty) => {{
-                    let ptr = dlsym(library, concat!($name, "\0").as_ptr().cast::<c_char>());
-                    if ptr.is_null() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            format!("Mooncake symbol {} not found: {}", $name, dl_error()),
-                        ));
-                    }
-                    std::mem::transmute::<*mut c_void, $ty>(ptr)
-                }};
-            }
             Ok(Self {
-                create: symbol!("mooncake_store_create", CreateFn),
-                destroy: symbol!("mooncake_store_destroy", DestroyFn),
-                setup: symbol!("mooncake_store_setup", SetupFn),
-                init_all: symbol!("mooncake_store_init_all", InitAllFn),
-                health: symbol!("mooncake_store_health_check", HealthFn),
-                put: symbol!("mooncake_store_put", PutFn),
-                get_into: symbol!("mooncake_store_get_into", GetIntoFn),
-                exist: symbol!("mooncake_store_is_exist", ExistFn),
-                get_size: symbol!("mooncake_store_get_size", GetSizeFn),
-                remove: symbol!("mooncake_store_remove", RemoveFn),
-                remove_regex: symbol!("mooncake_store_remove_by_regex", RemoveRegexFn),
+                create: symbol(library, b"mooncake_store_create\0")?,
+                destroy: symbol(library, b"mooncake_store_destroy\0")?,
+                setup: symbol(library, b"mooncake_store_setup\0")?,
+                init_all: symbol(library, b"mooncake_store_init_all\0")?,
+                health: symbol(library, b"mooncake_store_health_check\0")?,
+                put: symbol(library, b"mooncake_store_put\0")?,
+                get_into: symbol(library, b"mooncake_store_get_into\0")?,
+                exist: symbol(library, b"mooncake_store_is_exist\0")?,
+                get_size: symbol(library, b"mooncake_store_get_size\0")?,
+                remove: symbol(library, b"mooncake_store_remove\0")?,
+                remove_regex: symbol(library, b"mooncake_store_remove_by_regex\0")?,
             })
         }
     }
 
-    fn init_store(store: Store, api: Api, init: &MooncakeInit) -> io::Result<()> {
+    unsafe fn symbol<T: Copy>(library: *mut c_void, name: &'static [u8]) -> io::Result<T> {
+        let pointer = dlsym(library, name.as_ptr().cast::<c_char>());
+        if pointer.is_null() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Mooncake symbol {} not found: {}",
+                    String::from_utf8_lossy(&name[..name.len().saturating_sub(1)]),
+                    dl_error()
+                ),
+            ));
+        }
+        if std::mem::size_of::<T>() != std::mem::size_of::<*mut c_void>() {
+            return Err(io::Error::other("unexpected Mooncake function pointer size"));
+        }
+        Ok(std::mem::transmute_copy::<*mut c_void, T>(&pointer))
+    }
+
+    fn initialize(store: Store, api: Api, init: &MooncakeInit) -> io::Result<()> {
         match init {
             MooncakeInit::Setup {
                 local_hostname,
@@ -616,22 +465,22 @@ mod native {
                 device_name,
                 master_server_addr,
             } => {
-                let local_hostname = cstring(local_hostname, "local hostname")?;
-                let metadata_server = cstring(metadata_server, "metadata server")?;
+                let hostname = cstring(local_hostname, "local hostname")?;
+                let metadata = cstring(metadata_server, "metadata server")?;
                 let protocol = cstring(protocol, "protocol")?;
-                let device_name = cstring(device_name, "device name")?;
-                let master_server_addr = cstring(master_server_addr, "master server")?;
+                let device = cstring(device_name, "device name")?;
+                let master = cstring(master_server_addr, "master server")?;
                 check_zero(
                     unsafe {
                         (api.setup)(
                             store,
-                            local_hostname.as_ptr(),
-                            metadata_server.as_ptr(),
+                            hostname.as_ptr(),
+                            metadata.as_ptr(),
                             *global_segment_size,
                             *local_buffer_size,
                             protocol.as_ptr(),
-                            device_name.as_ptr(),
-                            master_server_addr.as_ptr(),
+                            device.as_ptr(),
+                            master.as_ptr(),
                         )
                     },
                     "setup",
@@ -643,24 +492,14 @@ mod native {
                 mount_segment_size,
             } => {
                 let protocol = cstring(protocol, "protocol")?;
-                let device_name = cstring(device_name, "device name")?;
+                let device = cstring(device_name, "device name")?;
                 check_zero(
                     unsafe {
-                        (api.init_all)(store, protocol.as_ptr(), device_name.as_ptr(), *mount_segment_size)
+                        (api.init_all)(store, protocol.as_ptr(), device.as_ptr(), *mount_segment_size)
                     },
                     "init_all",
                 )
             }
-        }
-    }
-
-    fn check_zero(status: i32, operation: &str) -> io::Result<()> {
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "Mooncake {operation} returned status {status}"
-            )))
         }
     }
 
@@ -673,49 +512,43 @@ mod native {
         })
     }
 
+    fn check_zero(status: i32, operation: &str) -> io::Result<()> {
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "Mooncake {operation} returned status {status}"
+            )))
+        }
+    }
+
     fn dl_error() -> String {
         let error = unsafe { dlerror() };
         if error.is_null() {
             "unknown dynamic loader error".to_owned()
         } else {
-            unsafe { std::ffi::CStr::from_ptr(error) }
-                .to_string_lossy()
-                .into_owned()
+            unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned()
         }
+    }
+
+    fn regex_escape(value: &str) -> String {
+        let mut out = String::with_capacity(value.len());
+        for ch in value.chars() {
+            if matches!(
+                ch,
+                '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\'
+            ) {
+                out.push('\\');
+            }
+            out.push(ch);
+        }
+        out
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::KvBlockRange;
-
-    fn key() -> KvBlockKey {
-        KvBlockKey::from_prefix(
-            "model",
-            &[1, 2, 3],
-            KvBlockRange {
-                block_index: 0,
-                token_start: 0,
-                token_count: 3,
-                layer_start: 0,
-                layer_count: 8,
-                layout_version: 1,
-            },
-        )
-    }
-
-    #[test]
-    fn frame_round_trip_preserves_cache_metadata() {
-        let entry = KvTierEntry {
-            block: KvBlock::new(key(), vec![7; 128]).unwrap(),
-            expires_at: 123,
-            pinned: true,
-        };
-        let encoded = encode_entry(&entry).unwrap();
-        let decoded = decode_entry(entry.block.key.clone(), &encoded, 1024).unwrap();
-        assert_eq!(decoded, entry);
-    }
 
     #[test]
     fn config_rejects_invalid_namespace() {
