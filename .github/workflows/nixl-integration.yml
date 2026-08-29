@@ -12,12 +12,13 @@ permissions:
 
 env:
   NIXL_SOURCE_SHA: c0a1102b94d173049a5478c23e765ba37681e2ca
+  UCX_SOURCE_SHA: b6a9d47fccce849c28111f05a7fa8f1c930ff17d
 
 jobs:
   nixl-ucx:
     name: NIXL / UCX registered-memory transfer
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -28,20 +29,48 @@ jobs:
           components: rustfmt, clippy
       - name: Compile optional NIXL surface against upstream stubs
         run: cargo check --features nixl-stub --bin rivet-cache-nixl-cert
-      - name: Install NIXL build prerequisites
+      - name: Install NIXL and UCX build prerequisites
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake git libaio-dev libucx-dev liburing-dev ninja-build pkg-config python3-pip
+            autoconf automake build-essential cmake git libaio-dev libtool liburing-dev \
+            m4 ninja-build pkg-config python3-pip
           python3 -m pip install --user meson pybind11 tomlkit
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build pinned UCX
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/ucx"
+          git clone --filter=blob:none https://github.com/openucx/ucx.git "$RUNNER_TEMP/ucx-src"
+          cd "$RUNNER_TEMP/ucx-src"
+          git checkout --detach "$UCX_SOURCE_SHA"
+          test "$(git rev-parse HEAD)" = "$UCX_SOURCE_SHA"
+          ./autogen.sh
+          ./contrib/configure-release \
+            --prefix="$prefix" \
+            --enable-shared \
+            --disable-static \
+            --disable-doxygen-doc \
+            --enable-optimizations \
+            --enable-cma \
+            --enable-devel-headers \
+            --without-cuda
+          make -j"$(nproc)"
+          make install
+          test -f "$prefix/lib/libucp.so" -o -f "$prefix/lib64/libucp.so"
+          echo "UCX_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "UCX_SOURCE_EXACT_SHA=$(git rev-parse HEAD)"
       - name: Build pinned upstream NIXL with UCX only
         shell: bash
         run: |
           set -euo pipefail
           prefix="$RUNNER_TEMP/nixl"
+          ucx="$UCX_PREFIX"
+          export PKG_CONFIG_PATH="$ucx/lib/pkgconfig:$ucx/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$ucx/lib:$ucx/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           git clone --filter=blob:none https://github.com/ai-dynamo/nixl.git "$RUNNER_TEMP/nixl-src"
           cd "$RUNNER_TEMP/nixl-src"
           git checkout --detach "$NIXL_SOURCE_SHA"
@@ -60,13 +89,15 @@ jobs:
           plugin="$(find "$prefix" -type f \( -name '*ucx*.so' -o -name '*UCX*.so' \) | head -n 1)"
           test -n "$plugin"
           plugin_dir="$(dirname "$plugin")"
-          lib_dirs="$(find "$prefix" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)"
-          test -n "$lib_dirs"
+          nixl_lib_dirs="$(find "$prefix" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)"
+          ucx_lib_dirs="$(find "$ucx" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd: -)"
+          test -n "$nixl_lib_dirs"
+          test -n "$ucx_lib_dirs"
 
           echo "NIXL_PREFIX=$prefix" >> "$GITHUB_ENV"
           echo "NIXL_PLUGIN_DIR=$plugin_dir" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$lib_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig:$prefix/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$nixl_lib_dirs:$ucx_lib_dirs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$prefix/lib/pkgconfig:$prefix/lib/x86_64-linux-gnu/pkgconfig:$ucx/lib/pkgconfig:$ucx/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
           echo "NIXL_SOURCE_EXACT_SHA=$(git rev-parse HEAD)"
           echo "NIXL_PLUGIN_DIR=$plugin_dir"
       - name: Certify real NIXL UCX prefill-to-decode transfer
