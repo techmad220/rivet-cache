@@ -315,15 +315,14 @@ impl AsyncKvPipeline {
         self.submit(AsyncKvOperation::Move, Payload::Move(requests))
     }
 
-    pub fn submit_prefetch(
-        &self,
-        keys: Vec<KvBlockKey>,
-        destination: usize,
-    ) -> io::Result<u64> {
+    pub fn submit_prefetch(&self, keys: Vec<KvBlockKey>, destination: usize) -> io::Result<u64> {
         if keys.is_empty() {
             return invalid("async prefetch requires at least one key");
         }
-        self.submit(AsyncKvOperation::Prefetch, Payload::Prefetch(keys, destination))
+        self.submit(
+            AsyncKvOperation::Prefetch,
+            Payload::Prefetch(keys, destination),
+        )
     }
 
     pub fn submit_invalidate(&self, keys: Vec<KvBlockKey>) -> io::Result<u64> {
@@ -550,7 +549,15 @@ fn worker_loop(
             }
         };
         state.mark_running(job.id);
-        emit(&events, job.id, job.operation, KvEventStatus::Started, 0, 0, None);
+        emit(
+            &events,
+            job.id,
+            job.operation,
+            KvEventStatus::Started,
+            0,
+            0,
+            None,
+        );
         let started = Instant::now();
         let result = execute(&engine, job.id, job.operation, job.payload, started)
             .map_err(AsyncKvError::from);
@@ -772,7 +779,10 @@ mod tests {
 
     #[test]
     fn store_retrieve_and_finish() {
-        let engine = KvEngine::builder().tier(MemoryTier::default()).build().unwrap();
+        let engine = KvEngine::builder()
+            .tier(MemoryTier::default())
+            .build()
+            .unwrap();
         let pipeline = AsyncKvPipeline::new(engine, 2, 8, None).unwrap();
         let original = block(0, 7);
         let store = pipeline
@@ -782,7 +792,9 @@ mod tests {
             pipeline.wait(store, Duration::from_secs(2)).unwrap().state,
             AsyncKvJobState::Completed
         );
-        let get = pipeline.submit_retrieve(vec![original.key.clone()]).unwrap();
+        let get = pipeline
+            .submit_retrieve(vec![original.key.clone()])
+            .unwrap();
         let result = pipeline
             .wait(get, Duration::from_secs(2))
             .unwrap()
@@ -812,6 +824,9 @@ mod tests {
             .unwrap()
             .result
             .unwrap();
-        assert_eq!((result.requested, result.completed, result.missed), (2, 1, 1));
+        assert_eq!(
+            (result.requested, result.completed, result.missed),
+            (2, 1, 1)
+        );
     }
 }

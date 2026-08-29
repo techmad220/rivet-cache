@@ -549,7 +549,10 @@ mod tests {
     }
 
     fn service() -> MpCacheService {
-        let engine = KvEngine::builder().tier(MemoryTier::default()).build().unwrap();
+        let engine = KvEngine::builder()
+            .tier(MemoryTier::default())
+            .build()
+            .unwrap();
         let pipeline = AsyncKvPipeline::new(engine.clone(), 2, 16, None).unwrap();
         MpCacheService::new(
             engine,
@@ -601,7 +604,10 @@ mod tests {
             .wait(retrieve.request_id, Duration::from_secs(2))
             .unwrap();
         assert_eq!(
-            service.retrieve_result(retrieve.request_id).unwrap().unwrap(),
+            service
+                .retrieve_result(retrieve.request_id)
+                .unwrap()
+                .unwrap(),
             blocks
         );
     }

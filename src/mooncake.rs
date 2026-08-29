@@ -70,12 +70,8 @@ impl MooncakeKvTier {
         #[cfg(target_os = "linux")]
         {
             let sdk = Arc::new(native::MooncakeSdk::connect(&config)?);
-            let inner = NativeSdkKvTier::new(
-                config.name,
-                config.namespace,
-                config.max_value_bytes,
-                sdk,
-            )?;
+            let inner =
+                NativeSdkKvTier::new(config.name, config.namespace, config.max_value_bytes, sdk)?;
             Ok(Self { inner })
         }
         #[cfg(not(target_os = "linux"))]
@@ -344,9 +340,7 @@ mod native {
             let store = guard.handle as Store;
             if self.exists(store, &key)? {
                 check_zero(
-                    unsafe {
-                        (self.api.remove)(store, key.as_ptr(), i32::from(self.force_remove))
-                    },
+                    unsafe { (self.api.remove)(store, key.as_ptr(), i32::from(self.force_remove)) },
                     "remove-before-put",
                 )?;
             }
@@ -449,7 +443,9 @@ mod native {
             ));
         }
         if std::mem::size_of::<T>() != std::mem::size_of::<*mut c_void>() {
-            return Err(io::Error::other("unexpected Mooncake function pointer size"));
+            return Err(io::Error::other(
+                "unexpected Mooncake function pointer size",
+            ));
         }
         Ok(std::mem::transmute_copy::<*mut c_void, T>(&pointer))
     }
@@ -495,7 +491,12 @@ mod native {
                 let device = cstring(device_name, "device name")?;
                 check_zero(
                     unsafe {
-                        (api.init_all)(store, protocol.as_ptr(), device.as_ptr(), *mount_segment_size)
+                        (api.init_all)(
+                            store,
+                            protocol.as_ptr(),
+                            device.as_ptr(),
+                            *mount_segment_size,
+                        )
                     },
                     "init_all",
                 )
@@ -527,7 +528,9 @@ mod native {
         if error.is_null() {
             "unknown dynamic loader error".to_owned()
         } else {
-            unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned()
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
         }
     }
 
