@@ -1,6 +1,6 @@
 use crate::{
-    DeviceBuffer, DeviceTransferProvider, DirectTransferRequest, GpuDirectIo, TransportCapabilities,
-    TransportKind,
+    DeviceBuffer, DeviceTransferProvider, DirectTransferRequest, GpuDirectIo,
+    TransportCapabilities, TransportKind,
 };
 use std::io;
 use std::sync::Arc;

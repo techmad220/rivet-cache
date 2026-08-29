@@ -2,10 +2,13 @@ mod codec;
 mod connectors;
 mod control;
 mod device;
+mod direct_transport;
 mod distributed;
 mod gpu_direct;
+mod hip_native;
 mod kv;
 mod llama_cpp;
+mod llama_quality;
 mod memory;
 mod observability;
 mod plugins;
@@ -28,6 +31,7 @@ pub use device::{
     DeviceAllocFn, DeviceBuffer, DeviceDownloadFn, DeviceFreeFn, DeviceHealthFn, DeviceKvTier,
     DeviceMemory, DeviceUploadFn, FfiDeviceMemory, FfiDeviceOps, HostDeviceMemory,
 };
+pub use direct_transport::GpuDirectTransferProvider;
 pub use distributed::{
     DeviceTransferFn, DeviceTransferHealthFn, DeviceTransferProvider, DirectTransferRequest,
     DisaggregatedKvRouter, FfiDeviceTransferOps, FfiDeviceTransferProvider, KvHandoffReport,
@@ -37,6 +41,7 @@ pub use gpu_direct::{
     FfiGpuDirectIo, FfiGpuDirectOps, GpuCopyFn, GpuDirectCapabilities, GpuDirectHealthFn,
     GpuDirectIo, GpuFileReadFn, GpuFileWriteFn,
 };
+pub use hip_native::{HipDeviceMemory, HipDirectIo};
 pub use kv::{
     ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
     KvCaptureRequest, KvEngine, KvEngineBuilder, KvEngineStats, KvPrefetch, KvTier, KvTierEntry,
@@ -46,6 +51,9 @@ pub use kv::{
 pub use llama_cpp::{
     FfiLlamaCppKvApi, LlamaCppAdapter, LlamaCppFfiOps, LlamaCppKvApi, LlamaHealthFn, LlamaKvSlice,
     LlamaReadKvFn, LlamaWriteKvFn, MockLlamaCppKvApi,
+};
+pub use llama_quality::{
+    FfiLlamaCppRecomputeApi, LlamaCppQualityAdapter, LlamaCppRecomputeApi, LlamaRecomputeFn,
 };
 pub use memory::{
     HeapPageAllocator, NativePinnedAllocator, PageAllocator, PinnedLease, PinnedMemoryPool,

@@ -256,9 +256,9 @@ impl GpuDirectIo for FfiGpuDirectIo {
 }
 
 fn validate_range(buffer: DeviceBuffer, offset: usize, bytes: usize) -> io::Result<()> {
-    let end = offset.checked_add(bytes).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct range overflow")
-    })?;
+    let end = offset
+        .checked_add(bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct range overflow"))?;
     if bytes == 0 || end > buffer.len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

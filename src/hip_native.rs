@@ -61,7 +61,11 @@ impl HipRuntime {
                 if pointer.is_null() {
                     None
                 } else {
-                    Some(unsafe { CStr::from_ptr(pointer) }.to_string_lossy().into_owned())
+                    Some(
+                        unsafe { CStr::from_ptr(pointer) }
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
                 }
             })
             .unwrap_or_else(|| "unknown HIP error".to_owned());
@@ -73,7 +77,9 @@ impl HipRuntime {
     fn health(&self) -> io::Result<()> {
         let mut count = 0_i32;
         // SAFETY: count points to writable process memory.
-        self.check("hipGetDeviceCount", unsafe { (self.device_count)(&mut count) })?;
+        self.check("hipGetDeviceCount", unsafe {
+            (self.device_count)(&mut count)
+        })?;
         if count <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -138,8 +144,9 @@ impl DeviceMemory for HipDeviceMemory {
         }
         let mut pointer = std::ptr::null_mut();
         // SAFETY: pointer targets writable process memory and HIP owns the resulting allocation.
-        self.runtime
-            .check("hipMalloc", unsafe { (self.runtime.malloc)(&mut pointer, len) })?;
+        self.runtime.check("hipMalloc", unsafe {
+            (self.runtime.malloc)(&mut pointer, len)
+        })?;
         if pointer.is_null() {
             return Err(io::Error::other(
                 "hipMalloc succeeded but returned a null device pointer",
@@ -172,21 +179,18 @@ impl DeviceMemory for HipDeviceMemory {
         let destination = handle_to_pointer(buffer.handle)?;
         // SAFETY: registry validation proves destination is a live allocation of this size;
         // bytes remains live for the synchronous HIP copy.
-        self.runtime.check(
-            "hipMemcpy(HostToDevice)",
-            unsafe {
-                (self.runtime.memcpy)(
-                    destination,
-                    bytes.as_ptr().cast::<c_void>(),
-                    bytes.len(),
-                    HIP_MEMCPY_HOST_TO_DEVICE,
-                )
-            },
-        )?;
-        self.runtime.check(
-            "hipDeviceSynchronize after upload",
-            unsafe { (self.runtime.synchronize)() },
-        )
+        self.runtime.check("hipMemcpy(HostToDevice)", unsafe {
+            (self.runtime.memcpy)(
+                destination,
+                bytes.as_ptr().cast::<c_void>(),
+                bytes.len(),
+                HIP_MEMCPY_HOST_TO_DEVICE,
+            )
+        })?;
+        self.runtime
+            .check("hipDeviceSynchronize after upload", unsafe {
+                (self.runtime.synchronize)()
+            })
     }
 
     fn download(&self, buffer: DeviceBuffer) -> io::Result<Vec<u8>> {
@@ -194,21 +198,18 @@ impl DeviceMemory for HipDeviceMemory {
         let source = handle_to_pointer(buffer.handle)?;
         let mut bytes = vec![0_u8; buffer.len];
         // SAFETY: registry validation proves source is live and destination has buffer.len bytes.
-        self.runtime.check(
-            "hipMemcpy(DeviceToHost)",
-            unsafe {
-                (self.runtime.memcpy)(
-                    bytes.as_mut_ptr().cast::<c_void>(),
-                    source.cast_const(),
-                    bytes.len(),
-                    HIP_MEMCPY_DEVICE_TO_HOST,
-                )
-            },
-        )?;
-        self.runtime.check(
-            "hipDeviceSynchronize after download",
-            unsafe { (self.runtime.synchronize)() },
-        )?;
+        self.runtime.check("hipMemcpy(DeviceToHost)", unsafe {
+            (self.runtime.memcpy)(
+                bytes.as_mut_ptr().cast::<c_void>(),
+                source.cast_const(),
+                bytes.len(),
+                HIP_MEMCPY_DEVICE_TO_HOST,
+            )
+        })?;
+        self.runtime
+            .check("hipDeviceSynchronize after download", unsafe {
+                (self.runtime.synchronize)()
+            })?;
         Ok(bytes)
     }
 
@@ -232,9 +233,6 @@ impl DeviceMemory for HipDeviceMemory {
 
 impl Drop for HipDeviceMemory {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.allocations) != 1 {
-            return;
-        }
         if let Ok(mut allocations) = self.allocations.lock() {
             for (handle, _) in allocations.drain() {
                 if let Ok(pointer) = handle_to_pointer(handle) {
@@ -297,10 +295,10 @@ impl HipDirectIo {
             ));
         }
         let actual = self.allocation_len(buffer.handle)?;
-        if actual != buffer.len {
+        if buffer.len > actual {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "HIP direct-I/O buffer length does not match allocation registry",
+                "HIP direct-I/O buffer metadata exceeds allocation registry length",
             ));
         }
         let end = offset.checked_add(bytes).ok_or_else(|| {
@@ -329,21 +327,18 @@ impl HipDirectIo {
         let destination = pointer_with_offset(destination.handle, destination_offset)?;
         // SAFETY: both ranges were checked against live HIP allocations; hipMemcpy is synchronous
         // with respect to the subsequent explicit device synchronization.
-        self.runtime.check(
-            "hipMemcpy(DeviceToDevice)",
-            unsafe {
-                (self.runtime.memcpy)(
-                    destination,
-                    source.cast_const(),
-                    bytes,
-                    HIP_MEMCPY_DEVICE_TO_DEVICE,
-                )
-            },
-        )?;
-        self.runtime.check(
-            "hipDeviceSynchronize after device copy",
-            unsafe { (self.runtime.synchronize)() },
-        )
+        self.runtime.check("hipMemcpy(DeviceToDevice)", unsafe {
+            (self.runtime.memcpy)(
+                destination,
+                source.cast_const(),
+                bytes,
+                HIP_MEMCPY_DEVICE_TO_DEVICE,
+            )
+        })?;
+        self.runtime
+            .check("hipDeviceSynchronize after device copy", unsafe {
+                (self.runtime.synchronize)()
+            })
     }
 
     #[cfg(target_os = "linux")]
@@ -385,6 +380,24 @@ impl GpuDirectIo for HipDirectIo {
         self.copy_device_range(source, 0, destination, 0, bytes)
     }
 
+    fn copy_device_range(
+        &self,
+        source: DeviceBuffer,
+        source_offset: usize,
+        destination: DeviceBuffer,
+        destination_offset: usize,
+        bytes: usize,
+    ) -> io::Result<()> {
+        HipDirectIo::copy_device_range(
+            self,
+            source,
+            source_offset,
+            destination,
+            destination_offset,
+            bytes,
+        )
+    }
+
     fn read_file(
         &self,
         path: &Path,
@@ -395,7 +408,8 @@ impl GpuDirectIo for HipDirectIo {
         self.validate_range(destination, destination_offset, bytes)?;
         #[cfg(target_os = "linux")]
         {
-            self.hipfile()?.read_file(path, destination, destination_offset, bytes)
+            self.hipfile()?
+                .read_file(path, destination, destination_offset, bytes)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -417,7 +431,8 @@ impl GpuDirectIo for HipDirectIo {
         self.validate_range(source, source_offset, bytes)?;
         #[cfg(target_os = "linux")]
         {
-            self.hipfile()?.write_file(source, source_offset, path, bytes)
+            self.hipfile()?
+                .write_file(source, source_offset, path, bytes)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -558,15 +573,16 @@ impl HipFileRuntime {
         use std::os::fd::AsRawFd;
         let mut descriptor = HipFileDescr {
             type_: 1,
-            handle: HipFileOsHandle { fd: file.as_raw_fd() },
+            handle: HipFileOsHandle {
+                fd: file.as_raw_fd(),
+            },
             fs_ops: std::ptr::null(),
         };
         let mut handle = std::ptr::null_mut();
         // SAFETY: descriptor mirrors hipFileDescr_t and the file remains open for this scope.
-        self.check(
-            "hipFileHandleRegister",
-            unsafe { (self.register_handle)(&mut handle, &mut descriptor) },
-        )?;
+        self.check("hipFileHandleRegister", unsafe {
+            (self.register_handle)(&mut handle, &mut descriptor)
+        })?;
         if handle.is_null() {
             return Err(io::Error::other(
                 "hipFileHandleRegister succeeded but returned a null handle",
@@ -585,10 +601,9 @@ impl HipFileRuntime {
     ) -> io::Result<T> {
         let pointer = handle_to_pointer(buffer.handle)?;
         // SAFETY: caller validated the buffer against a live hipMalloc allocation.
-        self.check(
-            "hipFileBufRegister",
-            unsafe { (self.register_buffer)(pointer.cast_const(), buffer.len, 0) },
-        )?;
+        self.check("hipFileBufRegister", unsafe {
+            (self.register_buffer)(pointer.cast_const(), buffer.len, 0)
+        })?;
         let result = operation(pointer);
         // SAFETY: same pointer registered immediately above and remains allocated.
         let deregister = unsafe { (self.deregister_buffer)(pointer.cast_const()) };
@@ -617,13 +632,7 @@ impl HipFileRuntime {
             self.with_registered_buffer(destination, |pointer| {
                 // SAFETY: registered file and device buffer remain valid for this synchronous call.
                 let transferred = unsafe {
-                    (self.read)(
-                        file_handle,
-                        pointer,
-                        bytes,
-                        0,
-                        destination_offset as i64,
-                    )
+                    (self.read)(file_handle, pointer, bytes, 0, destination_offset as i64)
                 };
                 check_transfer("hipFileRead", transferred, bytes)
             })
@@ -650,7 +659,13 @@ impl HipFileRuntime {
             self.with_registered_buffer(source, |pointer| {
                 // SAFETY: registered file and device buffer remain valid for this synchronous call.
                 let transferred = unsafe {
-                    (self.write)(file_handle, pointer.cast_const(), bytes, 0, source_offset as i64)
+                    (self.write)(
+                        file_handle,
+                        pointer.cast_const(),
+                        bytes,
+                        0,
+                        source_offset as i64,
+                    )
                 };
                 check_transfer("hipFileWrite", transferred, bytes)
             })
@@ -723,14 +738,20 @@ impl DynamicLibrary {
 
     fn open(name: &str) -> io::Result<Self> {
         let name = CString::new(name).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "dynamic library path contains NUL")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dynamic library path contains NUL",
+            )
         })?;
         platform_open(&name).map(|handle| Self { handle })
     }
 
     unsafe fn symbol<T: Copy>(&self, name: &[u8]) -> io::Result<T> {
         let name = CStr::from_bytes_with_nul(name).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "dynamic symbol name is not NUL terminated")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dynamic symbol name is not NUL terminated",
+            )
         })?;
         let pointer = platform_symbol(self.handle, name)?;
         if std::mem::size_of::<T>() != std::mem::size_of::<*mut c_void>() {

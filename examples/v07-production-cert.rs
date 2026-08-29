@@ -9,9 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn main() -> io::Result<()> {
-    let command = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "all".to_owned());
+    let command = std::env::args().nth(1).unwrap_or_else(|| "all".to_owned());
     match command.as_str() {
         "native-memory" => certify_native_memory(),
         "controller" => certify_controller(),
@@ -178,9 +176,7 @@ fn certify_s3() -> io::Result<()> {
         .get(&entry.block.key)?
         .ok_or_else(|| io::Error::other("S3 connector missed freshly written entry"))?;
     if restored != entry {
-        return Err(io::Error::other(
-            "S3 connector round-trip changed KV entry",
-        ));
+        return Err(io::Error::other("S3 connector round-trip changed KV entry"));
     }
     tier.remove(&entry.block.key)?;
     if tier.get(&entry.block.key)?.is_some() {

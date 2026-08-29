@@ -122,7 +122,10 @@ fn validate_range(query_tokens: &[u32], range: TokenRange) -> io::Result<()> {
         ));
     }
     let end = range.start.checked_add(range.len).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "llama.cpp recompute range overflow")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "llama.cpp recompute range overflow",
+        )
     })?;
     if end > query_tokens.len() {
         return Err(io::Error::new(
@@ -163,9 +166,10 @@ mod tests {
         let context = unsafe { &*(context.cast::<Context>()) };
         let tokens = unsafe { std::slice::from_raw_parts(query_tokens, query_token_count) };
         context.calls.fetch_add(1, Ordering::Relaxed);
-        context
-            .tokens
-            .fetch_add((tokens[range_start] + tokens[range_start + 1]) as u64, Ordering::Relaxed);
+        context.tokens.fetch_add(
+            (tokens[range_start] + tokens[range_start + 1]) as u64,
+            Ordering::Relaxed,
+        );
         0
     }
 
