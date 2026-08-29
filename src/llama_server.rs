@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,9 +207,11 @@ impl LlamaServerSlotBridge {
                 "model fingerprint and logical slot identity must not be empty",
             ));
         }
-        Ok(self
-            .cache
-            .make_key(LLAMA_SERVER_SLOT_NAMESPACE, model_fingerprint, logical_identity))
+        Ok(self.cache.make_key(
+            LLAMA_SERVER_SLOT_NAMESPACE,
+            model_fingerprint,
+            logical_identity,
+        ))
     }
 
     pub fn capture(
@@ -344,7 +346,7 @@ impl LlamaServerSlotBridge {
         self.validate_state_len(bytes.len() as u64)?;
         let final_path = self.path_for(filename)?;
         let nonce = SLOT_TEMP_NONCE.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!(".{filename}.{}.{}.tmp", std::process::id(), nonce);
+        let temp_name = format!("tmp-{filename}.{}.{}.tmp", std::process::id(), nonce);
         let temp_path = self.path_for(&temp_name)?;
 
         let mut file = OpenOptions::new()
@@ -413,9 +415,9 @@ fn validate_slot_filename(filename: &str) -> io::Result<()> {
         && filename != "."
         && filename != ".."
         && !filename.starts_with('.')
-        && filename.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-        });
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
     if !valid || filename.contains("..") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -575,26 +577,15 @@ mod tests {
         let cache_root = root.join("cache");
         fs::create_dir_all(&slot_root).expect("slot root");
         let cache = Arc::new(
-            ContextCache::new(
-                Some(cache_root),
-                0,
-                4 * 1024 * 1024,
-                Duration::ZERO,
-            )
-            .expect("cache"),
+            ContextCache::new(Some(cache_root), 0, 4 * 1024 * 1024, Duration::ZERO).expect("cache"),
         );
         let control = Arc::new(MockControl {
             slot_root: slot_root.clone(),
             payload: vec![1, 3, 3, 7, 9, 9, 4, 2],
             restored: Mutex::new(Vec::new()),
         });
-        let bridge = LlamaServerSlotBridge::new(
-            cache,
-            control.clone(),
-            &slot_root,
-            1024 * 1024,
-        )
-        .expect("bridge");
+        let bridge = LlamaServerSlotBridge::new(cache, control.clone(), &slot_root, 1024 * 1024)
+            .expect("bridge");
 
         let captured = bridge
             .capture(0, "model-sha", "prompt-sha", true)
@@ -603,7 +594,9 @@ mod tests {
         assert!(bridge
             .contains("model-sha", "prompt-sha")
             .expect("contains"));
-        assert!(!slot_root.join(slot_filename_for_key(&captured.cache_key)).exists());
+        assert!(!slot_root
+            .join(slot_filename_for_key(&captured.cache_key))
+            .exists());
 
         let restored = bridge
             .restore(1, "model-sha", "prompt-sha")
@@ -614,7 +607,9 @@ mod tests {
             *control.restored.lock().expect("restored"),
             vec![1, 3, 3, 7, 9, 9, 4, 2]
         );
-        assert!(!slot_root.join(slot_filename_for_key(&captured.cache_key)).exists());
+        assert!(!slot_root
+            .join(slot_filename_for_key(&captured.cache_key))
+            .exists());
         fs::remove_dir_all(root).expect("cleanup");
     }
 
@@ -629,7 +624,8 @@ mod tests {
             let request = String::from_utf8(request).expect("utf8 request");
             assert!(request.starts_with("POST /slots/3?action=save HTTP/1.1\r\n"));
             assert!(request.contains("{\"filename\":\"slot.ggsq\"}"));
-            let body = "{\"id_slot\":3,\"filename\":\"slot.ggsq\",\"n_saved\":12,\"n_written\":345}";
+            let body =
+                "{\"id_slot\":3,\"filename\":\"slot.ggsq\",\"n_saved\":12,\"n_written\":345}";
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()

@@ -27,30 +27,27 @@ fn main() {
 fn run() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 8 || args.len() > 10 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            usage(),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, usage()));
     }
 
     let command = args[1].as_str();
     if !matches!(command, "capture" | "restore" | "erase" | "contains") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            usage(),
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, usage()));
     }
 
     let server: SocketAddr = args[2].parse().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "invalid llama-server socket address")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid llama-server socket address",
+        )
     })?;
     let slot_root = PathBuf::from(&args[3]);
     let cache_root = PathBuf::from(&args[4]);
     let model_fingerprint = &args[5];
     let logical_identity = &args[6];
-    let slot_id: u32 = args[7].parse().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "invalid llama-server slot id")
-    })?;
+    let slot_id: u32 = args[7]
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid llama-server slot id"))?;
     let max_state_bytes = parse_optional_u64(&args, 8, DEFAULT_MAX_STATE_BYTES, "max state bytes")?;
     let cache_capacity_bytes = parse_optional_u64(
         &args,
@@ -73,7 +70,8 @@ fn run() -> io::Result<()> {
     )?);
     let control: Arc<dyn LlamaServerSlotControl> = Arc::new(
         HttpLlamaServerSlotControl::new(server)
-            .with_timeout(Duration::from_secs(180))?,
+            .with_timeout(Duration::from_secs(180))?
+            .with_max_response_bytes(64 * 1024)?,
     );
     let bridge = LlamaServerSlotBridge::new(cache, control, slot_root, max_state_bytes)?;
 
@@ -99,7 +97,10 @@ fn run() -> io::Result<()> {
         }
         "contains" => {
             let contains = bridge.contains(model_fingerprint, logical_identity)?;
-            println!("RIVET_LLAMA_SLOT_CONTAINS={} ", if contains { "PASS" } else { "MISS" });
+            println!(
+                "RIVET_LLAMA_SLOT_CONTAINS={}",
+                if contains { "PASS" } else { "MISS" }
+            );
             if !contains {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -128,12 +129,7 @@ fn print_receipt(operation: &str, receipt: &LlamaServerSlotReceipt) {
     );
 }
 
-fn parse_optional_u64(
-    args: &[String],
-    index: usize,
-    default: u64,
-    label: &str,
-) -> io::Result<u64> {
+fn parse_optional_u64(args: &[String], index: usize, default: u64, label: &str) -> io::Result<u64> {
     match args.get(index) {
         None => Ok(default),
         Some(value) => {
