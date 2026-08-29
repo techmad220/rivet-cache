@@ -25,13 +25,25 @@ fn main() -> io::Result<()> {
 
     let source = NixlEndpoint::new("rivet-prefill", "UCX")?;
     let target = NixlEndpoint::new("rivet-decode", "UCX")?;
+    if source.backend_name() != "UCX" || target.backend_name() != "UCX" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "NIXL endpoint did not retain the requested UCX backend identity",
+        ));
+    }
 
     let mut payload = vec![0_u8; bytes];
     for (index, byte) in payload.iter_mut().enumerate() {
         *byte = ((index.wrapping_mul(131).wrapping_add(0x5a)) % 251) as u8;
     }
     let source_buffer = NixlHostBuffer::from_bytes(&source, &payload)?;
-    let target_buffer = NixlHostBuffer::new(&target, bytes)?;
+    let mut target_buffer = NixlHostBuffer::new(&target, bytes)?;
+    if source_buffer.is_empty() || target_buffer.is_empty() {
+        return Err(io::Error::other(
+            "NIXL registration unexpectedly produced an empty buffer",
+        ));
+    }
+    target_buffer.fill(0);
 
     // Registrations must exist before metadata is captured so the remote agent
     // receives the memory registration records required by UCX.
@@ -63,7 +75,8 @@ fn main() -> io::Result<()> {
     }
 
     println!(
-        "RIVET_NIXL_UCX=PASS source={} target={} bytes={} elapsed_us={}",
+        "RIVET_NIXL_UCX=PASS backend={} source={} target={} bytes={} elapsed_us={}",
+        receipt.backend,
         source.agent_name(),
         target.agent_name(),
         receipt.bytes,
