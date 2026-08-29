@@ -26,4 +26,4 @@ The default key domain remains `RIVET_CACHE_V1`. The bundled filesystem format r
 
 ## Scope
 
-Public claims should describe implemented and tested RivetCache capabilities directly. The project does not require or assert compatibility, equivalence, or feature parity with any third-party cache product.
+Public claims describe implemented and tested RivetCache capabilities directly. Third-party compatibility, interoperability, equivalence, or comparative-performance claims require separate documented evidence.
