@@ -105,11 +105,20 @@ jobs:
         env:
           RIVET_NIXL_CERT_BYTES: '8388608'
           NIXL_LOG_LEVEL: INFO
+          RUST_BACKTRACE: '1'
         run: |
           set -euo pipefail
-          cargo run --release --features nixl --bin rivet-cache-nixl-cert | tee nixl-cert.log
+          cargo run --release --features nixl --bin rivet-cache-nixl-cert 2>&1 | tee nixl-cert.log
           grep -F 'RIVET_NIXL_UCX=PASS' nixl-cert.log
           grep -F 'RIVET_NIXL_METADATA=PASS' nixl-cert.log
           grep -F 'RIVET_V08_NIXL_CERT=PASS' nixl-cert.log
+      - name: Preserve NIXL certification log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nixl-cert-${{ github.sha }}
+          path: nixl-cert.log
+          if-no-files-found: warn
+          retention-days: 7
       - name: NIXL feature lint
         run: cargo clippy --features nixl --bin rivet-cache-nixl-cert -- -D warnings
