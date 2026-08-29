@@ -10,6 +10,8 @@ mod kv;
 mod llama_cpp;
 mod llama_quality;
 mod memory;
+#[cfg(all(target_os = "linux", feature = "nixl"))]
+mod nixl_native;
 mod observability;
 mod plugins;
 mod policy;
@@ -59,6 +61,8 @@ pub use memory::{
     HeapPageAllocator, NativePinnedAllocator, PageAllocator, PinnedLease, PinnedMemoryPool,
     PinnedPoolStats,
 };
+#[cfg(all(target_os = "linux", feature = "nixl"))]
+pub use nixl_native::{NixlEndpoint, NixlHostBuffer, NixlRemoteRegion, NixlTransferReceipt};
 pub use observability::{InstrumentedKvTier, PrometheusRegistry};
 pub use plugins::{
     CodecPluginFactory, KvTierPluginFactory, PluginComponent, PluginManifest, PluginRegistry,
