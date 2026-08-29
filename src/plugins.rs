@@ -102,18 +102,21 @@ impl PluginRegistry {
     }
 
     pub fn register_tier_factory(&self, factory: Arc<dyn KvTierPluginFactory>) -> io::Result<()> {
-        register_factory(&self.tier_factories, factory.kind(), factory)
+        let kind = factory.kind().to_owned();
+        register_factory(&self.tier_factories, &kind, factory)
     }
 
     pub fn register_codec_factory(&self, factory: Arc<dyn CodecPluginFactory>) -> io::Result<()> {
-        register_factory(&self.codec_factories, factory.kind(), factory)
+        let kind = factory.kind().to_owned();
+        register_factory(&self.codec_factories, &kind, factory)
     }
 
     pub fn register_transport_factory(
         &self,
         factory: Arc<dyn TransportPluginFactory>,
     ) -> io::Result<()> {
-        register_factory(&self.transport_factories, factory.kind(), factory)
+        let kind = factory.kind().to_owned();
+        register_factory(&self.transport_factories, &kind, factory)
     }
 
     pub fn discover_dir(&self, directory: &Path) -> io::Result<Vec<PluginManifest>> {
