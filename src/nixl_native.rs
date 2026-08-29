@@ -187,13 +187,9 @@ impl NixlEndpoint {
         })?;
 
         let mut source_desc = XferDescList::new(MemType::Dram).map_err(nixl_error)?;
-        source_desc
-            .add_desc(source_address, bytes, source.storage.device_id())
-            .map_err(nixl_error)?;
+        source_desc.add_desc(source_address, bytes, source.storage.device_id());
         let mut destination_desc = XferDescList::new(MemType::Dram).map_err(nixl_error)?;
-        destination_desc
-            .add_desc(destination_address, bytes, destination.device_id)
-            .map_err(nixl_error)?;
+        destination_desc.add_desc(destination_address, bytes, destination.device_id);
 
         let request = self
             .agent
