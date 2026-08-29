@@ -57,7 +57,7 @@ jobs:
             --user "${RIVET_S3_ACCESS_KEY}:${RIVET_S3_SECRET_KEY}" \
             -X PUT "${RIVET_S3_ENDPOINT}/${RIVET_S3_BUCKET}"
       - name: Certify native memory controller Redis and S3
-        run: cargo run --locked --example v07-production-cert -- all
+        run: cargo run --example v07-production-cert -- all
       - name: Container diagnostics on failure
         if: failure()
         shell: bash
@@ -77,4 +77,4 @@ jobs:
           toolchain: stable
       - name: Certify VirtualLock pool
         shell: powershell
-        run: cargo run --locked --example v07-production-cert -- native-memory
+        run: cargo run --example v07-production-cert -- native-memory
