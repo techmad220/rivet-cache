@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 - 2026-08-28
+
+- Added pooled native page-locked host memory with Linux `mlock`/NUMA binding and Windows `VirtualLock`/NUMA allocation paths behind injected allocators.
+- Added a runtime-loaded native HIP device allocator and synchronous H2D, D2H, and D2D transfer provider without adding a mandatory ROCm SDK dependency to the crate.
+- Added optional Linux hipFile GPU-storage read/write support with runtime discovery, registered GPU buffers, registered file handles, direct-I/O file opening, exact byte-count validation, and fail-closed capability reporting when hipFile is unavailable.
+- Added GPU-direct worker-transfer integration for prefill/decode orchestration, while retaining injected RDMA/NIXL/RiftGPU transport-provider boundaries for deployment-specific implementations.
+- Added real Redis/Valkey RESP and S3-compatible SigV4 KV connectors with bounded values, health checks, namespace isolation, and plugin discovery.
+- Added controller/daemon APIs with tenant byte/entry/inflight quotas, transactional reservations, worker roles and heartbeats, fleet state, health endpoints, and Prometheus text exposition.
+- Added counters, gauges, latency histograms, and instrumented KV tiers through the Prometheus-style observability layer.
+- Added pluggable framed payload codecs with checksum validation and identity/RLE reference codecs.
+- Added multi-span arbitrary-position reuse planning with minimum-coverage policy and mandatory boundary recomputation ranges.
+- Added `LlamaCppQualityAdapter` and an injected recomputation callback ABI so required quality-recovery ranges are executed by the embedding runtime before generation resumes.
+- Added repeatable production integration coverage against real Redis and MinIO services plus Linux and Windows native page-lock paths.
+- Kept accelerator, storage, remote-transport, and inference-runtime integrations optional and dependency-injected. Hardware-specific interoperability claims remain scoped to separately recorded exact-build certification.
+
 ## 0.6.0 - 2026-08-28
 
 - Added an optional std-only llama-server slot persistence bridge backed by `ContextCache`.
