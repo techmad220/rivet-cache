@@ -28,7 +28,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Repair crate-root integration and MSRV hygiene
+      - name: Repair crate-root integration and quality gates
         shell: bash
         run: |
           python - <<'PY'
@@ -66,9 +66,11 @@ jobs:
           mod reuse;
           mod store;
           '''
-          if old_modules not in lib:
-              raise SystemExit('legacy module header not found')
-          lib = lib.replace(old_modules, new_modules, 1)
+          if old_modules in lib:
+              lib = lib.replace(old_modules, new_modules, 1)
+          elif 'mod codec;' not in lib or 'mod quality;' not in lib:
+              raise SystemExit('crate module header is neither legacy nor integrated')
+
           store_exports = '''pub use store::{
               FileStore, LayeredStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry,
               VolatileStore,
@@ -106,9 +108,10 @@ jobs:
               QualityReusePolicy, TokenRange,
           };
           '''
-          if store_exports not in lib:
-              raise SystemExit('store export block not found')
-          lib = lib.replace(store_exports, additions, 1)
+          if 'pub use codec::{CodecKvTier' not in lib:
+              if store_exports not in lib:
+                  raise SystemExit('store export block not found')
+              lib = lib.replace(store_exports, additions, 1)
           lib_path.write_text(lib)
 
           legacy_wrapper = Path('src/lib_v07.rs')
@@ -125,14 +128,40 @@ jobs:
           connectors = connectors.replace('use std::sync::{Arc, Mutex};', 'use std::sync::Arc;')
           test_marker = '    use crate::KvBlockRange;\n'
           test_imports = test_marker + '    use std::collections::HashMap;\n    use std::io::Cursor;\n    use std::sync::Mutex;\n'
-          if test_marker not in connectors:
-              raise SystemExit('connector test marker not found')
-          connectors = connectors.replace(test_marker, test_imports, 1)
+          if '    use std::io::Cursor;\n' not in connectors:
+              if test_marker not in connectors:
+                  raise SystemExit('connector test marker not found')
+              connectors = connectors.replace(test_marker, test_imports, 1)
+          connectors = connectors.replace(
+              'RespValue::Integer(_) => Ok(()),',
+              'RespValue::Integer(removed) if removed >= 0 => Ok(()),',
+          )
+          connectors = connectors.replace(
+              'RespValue::Integer(_) => {}',
+              'RespValue::Integer(removed) if removed >= 0 => {}',
+          )
           connectors_path.write_text(connectors)
 
           control_path = Path('src/control.rs')
           control = control_path.read_text()
-          control = control.replace('io::ErrorKind::StorageFull,', 'io::ErrorKind::Other,')
+          control = control.replace(
+              '''return Err(io::Error::new(
+                          io::ErrorKind::StorageFull,
+                          format!("tenant {tenant} exceeded storage quota"),
+                      ));''',
+              '''return Err(io::Error::other(format!(
+                          "tenant {tenant} exceeded storage quota"
+                      )));''',
+          )
+          control = control.replace(
+              '''return Err(io::Error::new(
+                          io::ErrorKind::Other,
+                          format!("tenant {tenant} exceeded storage quota"),
+                      ));''',
+              '''return Err(io::Error::other(format!(
+                          "tenant {tenant} exceeded storage quota"
+                      )));''',
+          )
           control = control.replace(
               'quotas.begin_request("tenant-a").unwrap_err().kind(),',
               'quotas\n                .begin_request("tenant-a")\n                .err()\n                .expect("inflight quota error")\n                .kind(),',
@@ -146,6 +175,26 @@ jobs:
               'pool.acquire(1024, Some(0))\n                .err()\n                .expect("unsupported NUMA error")\n                .kind(),',
           )
           memory_path.write_text(memory)
+
+          observability_path = Path('src/observability.rs')
+          observability = observability_path.read_text()
+          observability = observability.replace(
+              '#[derive(Debug, Clone)]\nstruct Histogram {',
+              '#[derive(Debug, Clone, Default)]\nstruct Histogram {',
+          )
+          manual_default = '''
+          impl Default for Histogram {
+              fn default() -> Self {
+                  Self {
+                      buckets: [0; 8],
+                      count: 0,
+                      sum_micros: 0,
+                  }
+              }
+          }
+          '''
+          observability = observability.replace(manual_default, '\n')
+          observability_path.write_text(observability)
           PY
 
       - name: Normalize source
@@ -174,13 +223,10 @@ jobs:
           rustup toolchain install 1.75.0 --profile minimal
           cargo +1.75.0 check --all-targets
 
-      - name: Commit normalization only after all gates pass
+      - name: Commit normalized exact candidate and remove temporary workflow
         shell: bash
         run: |
-          if git diff --quiet; then
-            echo "RIVET_V07_NORMALIZE=NO_CHANGES"
-            exit 0
-          fi
+          git rm .github/workflows/temp-v0.7-normalize.yml
           git config user.name "techmad220"
           git config user.email "143960678+techmad220@users.noreply.github.com"
           git add -A src Cargo.toml
