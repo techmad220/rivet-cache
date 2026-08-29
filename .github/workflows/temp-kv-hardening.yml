@@ -19,6 +19,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Type rollback indices in hardening patch
+        shell: bash
+        run: sed -i 's/let mut written = Vec::new();/let mut written: Vec<usize> = Vec::new();/' tools/harden_kv_runtime.py
+
       - name: Apply hardening patch
         run: python tools/harden_kv_runtime.py
 
