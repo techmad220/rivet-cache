@@ -1,0 +1,138 @@
+name: Security Audit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  secret-history-scan:
+    name: Secret history scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan every reachable Git blob for credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          MAX_BLOB_BYTES = 5 * 1024 * 1024
+
+          PATTERNS = [
+              ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----")),
+              ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
+              ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b")),
+              ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+              ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+              ("openai-style-key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+              ("stripe-live-key", re.compile(r"\bsk_live_[0-9A-Za-z]{16,}\b")),
+              ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+              ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{30,}\b")),
+              ("credential-url", re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s/:@]+:[^\s/@]+@")),
+              (
+                  "generic-secret-assignment",
+                  re.compile(
+                      r"(?i)\b(?:password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token)\b\s*[:=]\s*['\"][^'\"\r\n]{12,}['\"]"
+                  ),
+              ),
+          ]
+
+          PLACEHOLDER_WORDS = (
+              "example",
+              "dummy",
+              "placeholder",
+              "changeme",
+              "change-me",
+              "your_",
+              "your-",
+              "redacted",
+              "not-a-real",
+          )
+
+          SENSITIVE_BASENAMES = {
+              ".env",
+              "id_rsa",
+              "id_ed25519",
+              "credentials.json",
+              "service-account.json",
+              "service_account.json",
+          }
+          SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
+
+          def git(*args, text=False):
+              return subprocess.run(
+                  ["git", *args],
+                  check=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  text=text,
+              ).stdout
+
+          objects = git("rev-list", "--objects", "--all", text=True)
+          findings = set()
+          seen_blobs = set()
+
+          for record in objects.splitlines():
+              oid, *rest = record.split(" ", 1)
+              path = rest[0] if rest else "<unknown-path>"
+
+              if oid in seen_blobs:
+                  continue
+              obj_type = git("cat-file", "-t", oid, text=True).strip()
+              if obj_type != "blob":
+                  continue
+              seen_blobs.add(oid)
+
+              basename = os.path.basename(path).lower()
+              lower_path = path.lower()
+              suspicious_name = (
+                  basename in SENSITIVE_BASENAMES
+                  or (basename.startswith(".env.") and basename not in {".env.example", ".env.sample", ".env.template"})
+                  or lower_path.endswith(SENSITIVE_SUFFIXES)
+              )
+              if suspicious_name:
+                  findings.add(("sensitive-filename", path, oid))
+
+              size = int(git("cat-file", "-s", oid, text=True).strip())
+              if size > MAX_BLOB_BYTES:
+                  continue
+
+              raw = git("cat-file", "blob", oid)
+              if b"\x00" in raw[:8192]:
+                  continue
+              text = raw.decode("utf-8", errors="ignore")
+
+              for line in text.splitlines():
+                  lower_line = line.lower()
+                  for name, pattern in PATTERNS:
+                      match = pattern.search(line)
+                      if not match:
+                          continue
+                      if name == "generic-secret-assignment" and any(word in lower_line for word in PLACEHOLDER_WORDS):
+                          continue
+                      findings.add((name, path, oid))
+
+          if findings:
+              print("Potential secret material detected. Values are intentionally not printed.", file=sys.stderr)
+              for name, path, oid in sorted(findings):
+                  print(f"- {name}: {path} (blob {oid})", file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Secret scan passed across {len(seen_blobs)} unique reachable Git blobs.")
+          PY
