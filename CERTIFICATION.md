@@ -12,6 +12,10 @@ Every release candidate must pass on Linux, Windows, and macOS:
 
 The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, TTL expiration, injected components, layered-store replication and conflict rejection, batch operations, and explicit invalidation.
 
+## Claim scope
+
+Public descriptions of RivetCache should state implemented and tested capabilities directly. Compatibility, interoperability, equivalence, or feature-comparison claims involving third-party products require separate documented evidence and are not implied by this certification.
+
 ## Production provenance
 
 The cache design was extracted from a production-proven Rust cache subsystem on August 28, 2026. The production integration exercised stable namespaced keys, memory hit/miss behavior, LRU eviction, restart persistence, explicit clearing/invalidation, corruption recovery, TTL expiry, deterministic replay, request isolation, stochastic bypass, and runtime prefix/KV reuse.
