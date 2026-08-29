@@ -1,0 +1,92 @@
+name: Temporary v0.4.0 release
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.pull_request.head.ref == 'ops/release-v0.4.0-20260828'
+    runs-on: ubuntu-latest
+    env:
+      TARGET_SHA: b93263dc32be0c093ddb832b3afbac5e649943ed
+      TAG: v0.4.0
+      HEAD_REF: ops/release-v0.4.0-20260828
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact certified release target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          test "$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)" = "0.4.0"
+
+      - name: Release package gate
+        run: |
+          cargo fmt --all -- --check
+          cargo test --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo package --locked
+
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            existing_target="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+            test "$existing_target" = "$TARGET_SHA" || {
+              echo "existing release target mismatch: $existing_target" >&2
+              exit 1
+            }
+          else
+            cat > /tmp/release-notes.md <<'NOTES'
+          RivetCache v0.4.0 adds a runtime-neutral KV orchestration layer on top of the generic DI-first cache core.
+
+          Highlights:
+          - Versioned KV block identity scoped by model fingerprint, token prefix, block/token range, layer range, and layout version.
+          - Ordered KV tiers with configurable read promotion and explicit block movement.
+          - Background tier prefetch using standard-library worker threads; no async runtime is required.
+          - Injected `KvTransport` and `KvAllocator` boundaries for specialized host, device, IPC, or network implementations.
+          - `ContextCacheTier` for composing existing RivetCache instances as KV tiers.
+          - Metadata-preserving KV envelopes carrying absolute expiration and pin state across tier movement.
+          - `PrefixIndex` for deterministic longest-prefix lookup.
+          - `RuntimeKvAdapter` plus validated `capture_from` and `restore_into` orchestration paths.
+          - Rollback-safe multi-tier write-through and stale-destination replacement during prefetch.
+          - KV telemetry covering hits, misses, writes, promotions, transfers, transferred bytes, invalidations, expirations, and prefetches.
+
+          Certification:
+          - exact release commit: `b93263dc32be0c093ddb832b3afbac5e649943ed`
+          - exact merged-main CI run `33224086504` passed formatting, all-target tests, and clippy on Linux, macOS, and Windows.
+          - release packaging reruns formatting, all-target tests, clippy with warnings denied, and `cargo package --locked` against the exact release commit.
+
+          Public RivetCache claims describe implemented and tested RivetCache capabilities directly. Hardware-specific throughput, runtime compatibility, remote-service interoperability, and comparative-performance claims require separate implementation-specific evidence.
+          NOTES
+
+            gh release create "$TAG" \
+              --target "$TARGET_SHA" \
+              --title "RivetCache v0.4.0" \
+              --notes-file /tmp/release-notes.md \
+              --verify-tag=false
+          fi
+
+      - name: Verify published target
+        shell: bash
+        run: |
+          tag_sha="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$TAG" | awk '{print $1}')"
+          test "$tag_sha" = "$TARGET_SHA"
+          test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$TARGET_SHA"
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "false"
+          test "$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)" = "false"
+
+      - name: Delete temporary release branch
+        shell: bash
+        run: gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${HEAD_REF}"
