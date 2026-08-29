@@ -18,7 +18,7 @@ A `KvBlockKey` includes the model fingerprint, a SHA-256 hash of the token prefi
 
 ## Runtime adapters
 
-`RuntimeKvAdapter` is the engine boundary. An adapter captures blocks for a `KvCaptureRequest` and restores a set of blocks into its runtime. RivetCache does not own runtime lifecycle, device contexts, streams, or FFI handles. This keeps unsafe/runtime-specific code outside the core crate.
+`RuntimeKvAdapter` is the engine boundary. An adapter captures blocks for a `KvCaptureRequest` and restores a set of blocks into its runtime. `KvEngine::capture_from` verifies that returned block identities exactly match the requested block identities before caching them, and `restore_into` restores only when every requested block is available. RivetCache does not own runtime lifecycle, device contexts, streams, or FFI handles. This keeps unsafe/runtime-specific code outside the core crate.
 
 ## Prefix discovery
 
@@ -26,7 +26,7 @@ A `KvBlockKey` includes the model fingerprint, a SHA-256 hash of the token prefi
 
 ## Consistency
 
-KV tier envelopes preserve expiration and pin state across movement. Expired entries are removed when observed by `KvEngine`. A transfer is considered complete only after the destination tier accepts the transferred entry; explicit source removal happens afterward.
+KV tier envelopes preserve expiration and pin state across movement. Expired entries are removed when observed by `KvEngine`. A transfer is considered complete only after the destination tier accepts the transferred entry; explicit source removal happens afterward. `KvWritePolicy::All` rolls back replicas written by the current call if a later tier rejects the write. Rollback removal is best-effort so the original backend error is preserved.
 
 ## Claim scope
 

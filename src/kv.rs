@@ -375,8 +375,15 @@ impl KvEngine {
         match self.inner.write_policy {
             KvWritePolicy::Primary => self.put_entry_to(0, &entry)?,
             KvWritePolicy::All => {
+                let mut written: Vec<usize> = Vec::new();
                 for index in 0..self.inner.tiers.len() {
-                    self.put_entry_to(index, &entry)?;
+                    if let Err(error) = self.put_entry_to(index, &entry) {
+                        for written_index in written {
+                            let _ = self.inner.tiers[written_index].remove(&entry.block.key);
+                        }
+                        return Err(error);
+                    }
+                    written.push(index);
                 }
             }
         }
@@ -477,6 +484,52 @@ impl KvEngine {
         Ok(true)
     }
 
+    pub fn capture_from(
+        &self,
+        adapter: &dyn RuntimeKvAdapter,
+        request: &KvCaptureRequest,
+        ttl: Option<Duration>,
+        pinned: bool,
+    ) -> io::Result<usize> {
+        let expected = request.block_keys()?;
+        let blocks = adapter.capture(request)?;
+        if blocks.len() != expected.len()
+            || blocks
+                .iter()
+                .zip(expected.iter())
+                .any(|(block, key)| &block.key != key)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "runtime adapter {} returned blocks that do not match the capture request",
+                    adapter.runtime_name()
+                ),
+            ));
+        }
+        let count = blocks.len();
+        for block in blocks {
+            self.put(block, ttl, pinned)?;
+        }
+        Ok(count)
+    }
+
+    pub fn restore_into(
+        &self,
+        adapter: &dyn RuntimeKvAdapter,
+        keys: &[KvBlockKey],
+    ) -> io::Result<bool> {
+        let mut blocks = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(block) = self.get(key)? else {
+                return Ok(false);
+            };
+            blocks.push(block);
+        }
+        adapter.restore(&blocks)?;
+        Ok(true)
+    }
+
     pub fn invalidate(&self, key: &KvBlockKey) -> io::Result<()> {
         for tier in &self.inner.tiers {
             tier.remove(key)?;
@@ -514,9 +567,16 @@ impl KvEngine {
         let mut missed = 0_u64;
 
         for key in keys {
-            if self.inner.tiers[destination_index].get(&key)?.is_some() {
-                populated = populated.saturating_add(1);
-                continue;
+            let now = self.inner.clock.now_seconds();
+            if let Some(destination_entry) = self.inner.tiers[destination_index].get(&key)? {
+                if is_expired(destination_entry.expires_at, now) {
+                    self.inner.tiers[destination_index].remove(&key)?;
+                    let mut stats = self.stats_mut()?;
+                    stats.expirations = stats.expirations.saturating_add(1);
+                } else {
+                    populated = populated.saturating_add(1);
+                    continue;
+                }
             }
 
             let mut found = None;
@@ -525,7 +585,7 @@ impl KvEngine {
                     continue;
                 }
                 if let Some(entry) = self.inner.tiers[source_index].get(&key)? {
-                    if is_expired(entry.expires_at, self.inner.clock.now_seconds()) {
+                    if is_expired(entry.expires_at, now) {
                         self.inner.tiers[source_index].remove(&key)?;
                         let mut stats = self.stats_mut()?;
                         stats.expirations = stats.expirations.saturating_add(1);
@@ -668,8 +728,21 @@ impl KvCaptureRequest {
                 "layer_count must be greater than zero",
             ));
         }
+        if self.tokens.len() > u32::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "token sequence is too large for KV block identity",
+            ));
+        }
+        let block_count = self.tokens.len().div_ceil(self.block_tokens);
+        if block_count > u32::MAX as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "block count is too large for KV block identity",
+            ));
+        }
 
-        let mut keys = Vec::new();
+        let mut keys = Vec::with_capacity(block_count);
         for (block_index, chunk) in self.tokens.chunks(self.block_tokens).enumerate() {
             let token_start = block_index.saturating_mul(self.block_tokens);
             let prefix_end = token_start.saturating_add(chunk.len());
@@ -730,6 +803,15 @@ impl PrefixIndex {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "prefix records require tokens and block keys",
+            ));
+        }
+        if block_keys
+            .iter()
+            .any(|key| key.model_fingerprint != model_fingerprint)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "prefix block keys must match the registered model fingerprint",
             ));
         }
         let mut records = self
@@ -905,6 +987,57 @@ mod tests {
                 .expect("cache"),
         );
         Arc::new(ContextCacheTier::new(name, cache).expect("tier"))
+    }
+
+    struct FailingTier {
+        name: String,
+    }
+
+    impl KvTier for FailingTier {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn get(&self, _key: &KvBlockKey) -> io::Result<Option<KvTierEntry>> {
+            Ok(None)
+        }
+
+        fn put(&self, _entry: &KvTierEntry) -> io::Result<()> {
+            Err(io::Error::other("injected tier write failure"))
+        }
+
+        fn remove(&self, _key: &KvBlockKey) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingAdapter {
+        restored: Mutex<Vec<KvBlock>>,
+    }
+
+    impl RuntimeKvAdapter for RecordingAdapter {
+        fn runtime_name(&self) -> &str {
+            "recording-test-runtime"
+        }
+
+        fn capture(&self, request: &KvCaptureRequest) -> io::Result<Vec<KvBlock>> {
+            request
+                .block_keys()?
+                .into_iter()
+                .enumerate()
+                .map(|(index, key)| KvBlock::new(key, vec![(index as u8).saturating_add(1)]))
+                .collect()
+        }
+
+        fn restore(&self, blocks: &[KvBlock]) -> io::Result<()> {
+            *self
+                .restored
+                .lock()
+                .map_err(|_| io::Error::other("recording adapter lock poisoned"))? =
+                blocks.to_vec();
+            Ok(())
+        }
     }
 
     #[test]
@@ -1112,5 +1245,120 @@ mod tests {
         let encoded = encode_tier_entry(&entry).expect("encode");
         let decoded = decode_tier_entry(key, &encoded).expect("decode");
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn write_through_rolls_back_earlier_tiers_on_failure() {
+        let first = tier("first");
+        let engine = KvEngine::builder()
+            .tier_arc(first.clone())
+            .tier(FailingTier {
+                name: "failing".to_string(),
+            })
+            .write_policy(KvWritePolicy::All)
+            .build()
+            .expect("engine");
+        let key = key(&[61]);
+        let error = engine
+            .put(
+                KvBlock::new(key.clone(), b"rollback".to_vec()).expect("block"),
+                None,
+                false,
+            )
+            .expect_err("write must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(first.get(&key).expect("first tier").is_none());
+    }
+
+    #[test]
+    fn prefetch_replaces_expired_destination_entry() {
+        let clock = Arc::new(ManualClock::new(100));
+        let fast = tier("fast");
+        let slow = tier("slow");
+        let engine = KvEngine::builder()
+            .tier_arc(fast.clone())
+            .tier_arc(slow.clone())
+            .clock_arc(clock.clone())
+            .promote_on_read(false)
+            .build()
+            .expect("engine");
+        let key = key(&[71]);
+        fast.put(&KvTierEntry {
+            block: KvBlock::new(key.clone(), b"stale".to_vec()).expect("stale block"),
+            expires_at: 101,
+            pinned: false,
+        })
+        .expect("seed fast");
+        slow.put(&KvTierEntry {
+            block: KvBlock::new(key.clone(), b"fresh".to_vec()).expect("fresh block"),
+            expires_at: 0,
+            pinned: false,
+        })
+        .expect("seed slow");
+        clock.advance(1);
+
+        let report = engine
+            .prefetch_to(vec![key.clone()], 0)
+            .wait()
+            .expect("prefetch");
+        assert_eq!(report.populated, 1);
+        assert_eq!(
+            fast.get(&key)
+                .expect("fast")
+                .expect("replacement")
+                .block
+                .bytes,
+            b"fresh"
+        );
+        assert_eq!(engine.stats().expect("stats").expirations, 1);
+    }
+
+    #[test]
+    fn runtime_adapter_capture_and_restore_are_validated() {
+        let cache_tier = tier("runtime-cache");
+        let engine = KvEngine::builder()
+            .tier_arc(cache_tier)
+            .build()
+            .expect("engine");
+        let request = KvCaptureRequest {
+            model_fingerprint: "runtime-model".to_string(),
+            tokens: vec![1, 2, 3, 4],
+            block_tokens: 2,
+            layer_start: 0,
+            layer_count: 8,
+            layout_version: 1,
+        };
+        let adapter = RecordingAdapter::default();
+        let captured = engine
+            .capture_from(&adapter, &request, None, false)
+            .expect("capture");
+        assert_eq!(captured, 2);
+        let keys = request.block_keys().expect("keys");
+        assert!(engine.restore_into(&adapter, &keys).expect("restore"));
+        assert_eq!(
+            adapter.restored.lock().expect("restored lock").len(),
+            keys.len()
+        );
+    }
+
+    #[test]
+    fn prefix_index_rejects_cross_model_block_keys() {
+        let index = PrefixIndex::new();
+        let wrong = KvBlockKey::from_prefix(
+            "other-model",
+            &[1, 2],
+            KvBlockRange {
+                block_index: 0,
+                token_start: 0,
+                token_count: 2,
+                layer_start: 0,
+                layer_count: 4,
+                layout_version: 1,
+            },
+        );
+        let error = index
+            .register("model-a", vec![1, 2], vec![wrong])
+            .expect_err("model mismatch must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }
