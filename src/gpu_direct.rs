@@ -21,6 +21,24 @@ pub trait GpuDirectIo: Send + Sync {
         destination: DeviceBuffer,
         bytes: usize,
     ) -> io::Result<()>;
+    fn copy_device_range(
+        &self,
+        source: DeviceBuffer,
+        source_offset: usize,
+        destination: DeviceBuffer,
+        destination_offset: usize,
+        bytes: usize,
+    ) -> io::Result<()> {
+        validate_range(source, source_offset, bytes)?;
+        validate_range(destination, destination_offset, bytes)?;
+        if source_offset != 0 || destination_offset != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GPU-direct provider does not implement offset device copies",
+            ));
+        }
+        self.copy_device(source, destination, bytes)
+    }
     fn read_file(
         &self,
         path: &Path,
@@ -238,7 +256,10 @@ impl GpuDirectIo for FfiGpuDirectIo {
 }
 
 fn validate_range(buffer: DeviceBuffer, offset: usize, bytes: usize) -> io::Result<()> {
-    if bytes == 0 || offset.checked_add(bytes).is_none() || offset + bytes > buffer.len {
+    let end = offset.checked_add(bytes).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct range overflow")
+    })?;
+    if bytes == 0 || end > buffer.len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "GPU-direct range exceeds the device buffer",
@@ -341,6 +362,9 @@ mod tests {
             len: 4096,
         };
         io.copy_device(source, destination, 2048).unwrap();
+        assert!(io
+            .copy_device_range(source, 1, destination, 0, 1024)
+            .is_err());
         io.read_file(Path::new("state.bin"), destination, 0, 1024)
             .unwrap();
         io.write_file(source, 512, Path::new("state.bin"), 1024)
