@@ -2,7 +2,8 @@ name: Temporary v0.5 completion gate
 
 on:
   push:
-    branches: [feat/distributed-runtime-completion]
+    branches:
+      - feat/distributed-runtime-completion
 
 permissions:
   contents: write
@@ -17,293 +18,28 @@ jobs:
           ref: feat/distributed-runtime-completion
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: Wire production modules
+      - name: Apply wiring patch
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          kv = Path('src/kv.rs')
-          text = kv.read_text()
-          old = '''pub trait KvTier: Send + Sync {
-              fn name(&self) -> &str;
-              fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>>;
-              fn put(&self, entry: &KvTierEntry) -> io::Result<()>;
-              fn remove(&self, key: &KvBlockKey) -> io::Result<()>;
-          }
-          '''
-          new = '''pub trait KvTier: Send + Sync {
-              fn name(&self) -> &str;
-              fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>>;
-              fn put(&self, entry: &KvTierEntry) -> io::Result<()>;
-              fn remove(&self, key: &KvBlockKey) -> io::Result<()>;
-              fn clear(&self) -> io::Result<()> {
-                  Err(io::Error::new(
-                      io::ErrorKind::Unsupported,
-                      format!("KV tier {} does not implement clear", self.name()),
-                  ))
-              }
-              fn health(&self) -> io::Result<()> {
-                  Ok(())
-              }
-          }
-          '''
-          if old not in text:
-              raise SystemExit('KvTier marker not found')
-          text = text.replace(old, new, 1)
-
-          old = '''    fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
-                  self.cache.invalidate(&key.cache_key())
-              }
-          }
-          '''
-          new = '''    fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
-                  self.cache.invalidate(&key.cache_key())
-              }
-
-              fn clear(&self) -> io::Result<()> {
-                  self.cache.clear()
-              }
-          }
-          '''
-          if old not in text:
-              raise SystemExit('ContextCacheTier remove marker not found')
-          text = text.replace(old, new, 1)
-
-          marker = '''#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-          pub struct KvEngineStats {
-          '''
-          health = '''#[derive(Debug, Clone, PartialEq, Eq)]
-          pub struct KvTierHealth {
-              pub name: String,
-              pub healthy: bool,
-              pub error: Option<String>,
-          }
-
-          '''
-          if marker not in text:
-              raise SystemExit('KvEngineStats marker not found')
-          text = text.replace(marker, health + marker, 1)
-
-          old = '''    pub fn invalidate(&self, key: &KvBlockKey) -> io::Result<()> {
-                  for tier in &self.inner.tiers {
-                      tier.remove(key)?;
-                  }
-                  let mut stats = self.stats_mut()?;
-                  stats.invalidations = stats.invalidations.saturating_add(1);
-                  Ok(())
-              }
-
-              pub fn prefetch_to(&self, keys: Vec<KvBlockKey>, destination_index: usize) -> KvPrefetch {
-          '''
-          new = '''    pub fn invalidate(&self, key: &KvBlockKey) -> io::Result<()> {
-                  for tier in &self.inner.tiers {
-                      tier.remove(key)?;
-                  }
-                  let mut stats = self.stats_mut()?;
-                  stats.invalidations = stats.invalidations.saturating_add(1);
-                  Ok(())
-              }
-
-              pub fn set_pinned(&self, key: &KvBlockKey, pinned: bool) -> io::Result<bool> {
-                  let now = self.inner.clock.now_seconds();
-                  let mut found = false;
-                  for tier in &self.inner.tiers {
-                      let Some(mut entry) = tier.get(key)? else {
-                          continue;
-                      };
-                      if is_expired(entry.expires_at, now) {
-                          tier.remove(key)?;
-                          let mut stats = self.stats_mut()?;
-                          stats.expirations = stats.expirations.saturating_add(1);
-                          continue;
-                      }
-                      entry.pinned = pinned;
-                      tier.put(&entry)?;
-                      found = true;
-                  }
-                  Ok(found)
-              }
-
-              pub fn clear(&self) -> io::Result<()> {
-                  let mut first_error = None;
-                  for tier in &self.inner.tiers {
-                      if let Err(error) = tier.clear() {
-                          if first_error.is_none() {
-                              first_error = Some(error);
-                          }
-                      }
-                  }
-                  match first_error {
-                      Some(error) => Err(error),
-                      None => Ok(()),
-                  }
-              }
-
-              pub fn health(&self) -> Vec<KvTierHealth> {
-                  self.inner
-                      .tiers
-                      .iter()
-                      .map(|tier| match tier.health() {
-                          Ok(()) => KvTierHealth {
-                              name: tier.name().to_string(),
-                              healthy: true,
-                              error: None,
-                          },
-                          Err(error) => KvTierHealth {
-                              name: tier.name().to_string(),
-                              healthy: false,
-                              error: Some(error.to_string()),
-                          },
-                      })
-                      .collect()
-              }
-
-              pub fn prefetch_to(&self, keys: Vec<KvBlockKey>, destination_index: usize) -> KvPrefetch {
-          '''
-          if old not in text:
-              raise SystemExit('invalidate marker not found')
-          text = text.replace(old, new, 1)
-          kv.write_text(text)
-
-          lib = Path('src/lib.rs')
-          text = lib.read_text()
-          old = '''mod kv;
-          mod policy;
-          mod store;
-          '''
-          new = '''mod device;
-          mod kv;
-          mod llama_cpp;
-          mod policy;
-          mod remote;
-          mod reuse;
-          mod store;
-          '''
-          if old not in text:
-              raise SystemExit('lib module marker not found')
-          text = text.replace(old, new, 1)
-          old = '''pub use kv::{
-              ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
-              KvCaptureRequest, KvEngine, KvEngineBuilder, KvEngineStats, KvPrefetch, KvTier, KvTierEntry,
-              KvTransport, KvWritePolicy, PrefetchReport, PrefixIndex, PrefixMatch, RuntimeKvAdapter,
-              VecAllocator,
-          };
-          '''
-          new = '''pub use device::{
-              DeviceAllocFn, DeviceBuffer, DeviceDownloadFn, DeviceFreeFn, DeviceHealthFn,
-              DeviceKvTier, DeviceMemory, DeviceUploadFn, FfiDeviceMemory, FfiDeviceOps,
-              HostDeviceMemory,
-          };
-          pub use kv::{
-              ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
-              KvCaptureRequest, KvEngine, KvEngineBuilder, KvEngineStats, KvPrefetch, KvTier,
-              KvTierEntry, KvTierHealth, KvTransport, KvWritePolicy, PrefetchReport, PrefixIndex,
-              PrefixMatch, RuntimeKvAdapter, VecAllocator,
-          };
-          pub use llama_cpp::{
-              FfiLlamaCppKvApi, LlamaCppAdapter, LlamaCppFfiOps, LlamaCppKvApi, LlamaHealthFn,
-              LlamaKvSlice, LlamaReadKvFn, LlamaWriteKvFn, MockLlamaCppKvApi,
-          };
-          pub use remote::{RemoteLimits, TcpKvServer, TcpKvTier};
-          pub use reuse::{
-              restore_reuse, RelocatableRuntimeKvAdapter, ReuseSpan, SegmentIndex,
-          };
-          '''
-          if old not in text:
-              raise SystemExit('lib export marker not found')
-          text = text.replace(old, new, 1)
-          lib.write_text(text)
-
-          cargo = Path('Cargo.toml')
-          text = cargo.read_text()
-          text = text.replace('version = "0.4.0"', 'version = "0.5.0"', 1)
-          text = text.replace(
-              'description = "DI-first Rust cache with composable storage tiers and runtime-neutral KV orchestration."',
-              'description = "DI-first Rust KV cache with device tiers, remote service mode, runtime adapters, and reuse orchestration."',
-              1,
-          )
-          cargo.write_text(text)
-
-          changelog = Path('CHANGELOG.md')
-          existing = changelog.read_text()
-          entry = '''## 0.5.0 - 2026-08-28
-
-- Added a standalone std-only TCP KV service and `TcpKvTier` client with bounded payloads, connection limits, timeouts, health checks, clear, get, put, and remove operations.
-- Added `DeviceKvTier`, a device-buffer ownership layer, a host reference backend, and an unsafe opt-in FFI callback bridge for accelerator runtimes.
-- Added a llama.cpp host-callback runtime adapter with capture, restore, health, and relocated restore for exact reusable segments.
-- Added `SegmentIndex` and `restore_reuse` for deterministic block-aligned non-prefix exact segment reuse.
-- Added tier health, clear, and pin/unpin control operations to `KvEngine`.
-- Kept network/device/runtime integrations optional and dependency-injected; the core remains free of mandatory async, networking framework, GPU SDK, or inference-engine dependencies.
-
-'''
-          if '## 0.5.0 - 2026-08-28' not in existing:
-              if existing.startswith('# Changelog'):
-                  parts = existing.split('\n', 2)
-                  existing = parts[0] + '\n\n' + entry + (parts[2] if len(parts) > 2 else '')
-              else:
-                  existing = entry + existing
-          changelog.write_text(existing)
-
-          readme = Path('README.md')
-          existing = readme.read_text()
-          section = '''
-          ## Distributed/runtime KV layer
-
-          RivetCache includes optional execution adapters around the DI-first cache core:
-
-          - `TcpKvServer` + `TcpKvTier`: a standalone binary TCP KV service/client for cross-process or cross-host cache sharing. The bundled protocol intentionally does not embed authentication or TLS; use it only on trusted application networks or behind an authenticated/tunneled boundary.
-          - `DeviceKvTier`: stores KV payloads in buffers owned by an injected `DeviceMemory` implementation. `FfiDeviceMemory` exposes an unsafe callback ABI that accelerator integrations can implement without linking a GPU SDK into the core crate.
-          - `LlamaCppAdapter`: a host-callback adapter that maps RivetCache block ranges to capture/restore callbacks supplied by an embedding llama.cpp host. This callback contract is a RivetCache integration surface and does not claim compatibility with an upstream private/internal ABI.
-          - `SegmentIndex`: finds exact contiguous token matches at non-prefix positions, aligns them to complete cached blocks, and can restore those blocks at a relocated token position through `RelocatableRuntimeKvAdapter`.
-          - `KvEngine::health`, `KvEngine::clear`, and `KvEngine::set_pinned` provide direct management operations across configured tiers.
-
-          The standalone server can be started with:
-
-          ```text
-          cargo run --bin rivet-cache-server -- 127.0.0.1:65432 ./rivet-cache-data 512 8192
-          ```
-
-          Public capability claims are limited to code paths implemented and tested in this repository. Hardware throughput, a specific external runtime build, transport interoperability outside the RivetCache protocol, and comparative performance require separate implementation-specific evidence.
-          '''
-          if '## Distributed/runtime KV layer' not in existing:
-              existing = existing.rstrip() + '\n' + section + '\n'
-          readme.write_text(existing)
-
-          arch = Path('docs/architecture.md')
-          existing = arch.read_text()
-          section = '''
-          ## v0.5 execution adapters
-
-          The core cache remains runtime-neutral. Optional sibling modules supply execution-specific boundaries:
-
-          - Remote service mode uses a versioned RivetCache TCP protocol with bounded messages and explicit health/clear operations. It is an application protocol, not an authenticated network perimeter.
-          - Device storage owns opaque buffer handles through `DeviceMemory`. The FFI implementation delegates allocation/upload/download/free to caller-supplied callbacks and therefore can be bound to Vulkan, ROCm/HIP, CUDA, shared-memory, or other device systems without adding those SDKs to the core crate.
-          - The llama.cpp adapter delegates KV extraction/injection to host callbacks defined by RivetCache. This avoids depending on unstable engine internals in the core library.
-          - Non-prefix reuse is exact and block-aligned: `SegmentIndex` finds contiguous token subsequences and only returns complete registered KV blocks. Relocation is delegated to a runtime adapter. No approximate recomputation or quality-recovery algorithm is implied.
-          '''
-          if '## v0.5 execution adapters' not in existing:
-              existing = existing.rstrip() + '\n\n' + section + '\n'
-          arch.write_text(existing)
-          PY
-      - name: Remove one-shot workflow and format
+          python3 -c "import base64; exec(base64.b64decode('CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAoKZGVmIHJlcGxhY2Vfb25jZShwYXRoLCBvbGQsIG5ldyk6CiAgICBwID0gUGF0aChwYXRoKQogICAgdGV4dCA9IHAucmVhZF90ZXh0KCkKICAgIGlmIG9sZCBub3QgaW4gdGV4dDoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KGYibWFya2VyIG5vdCBmb3VuZCBpbiB7cGF0aH06IHtvbGRbOjgwXSFyfSIpCiAgICBwLndyaXRlX3RleHQodGV4dC5yZXBsYWNlKG9sZCwgbmV3LCAxKSkKCnJlcGxhY2Vfb25jZSgKICAgICJzcmMva3YucnMiLAogICAgIiIicHViIHRyYWl0IEt2VGllcjogU2VuZCArIFN5bmMgewogICAgZm4gbmFtZSgmc2VsZikgLT4gJnN0cjsKICAgIGZuIGdldCgmc2VsZiwga2V5OiAmS3ZCbG9ja0tleSkgLT4gaW86OlJlc3VsdDxPcHRpb248S3ZUaWVyRW50cnk+PjsKICAgIGZuIHB1dCgmc2VsZiwgZW50cnk6ICZLdlRpZXJFbnRyeSkgLT4gaW86OlJlc3VsdDwoKT47CiAgICBmbiByZW1vdmUoJnNlbGYsIGtleTogJkt2QmxvY2tLZXkpIC0+IGlvOjpSZXN1bHQ8KCk+Owp9CiIiIiwKICAgICIiInB1YiB0cmFpdCBLdlRpZXI6IFNlbmQgKyBTeW5jIHsKICAgIGZuIG5hbWUoJnNlbGYpIC0+ICZzdHI7CiAgICBmbiBnZXQoJnNlbGYsIGtleTogJkt2QmxvY2tLZXkpIC0+IGlvOjpSZXN1bHQ8T3B0aW9uPEt2VGllckVudHJ5Pj47CiAgICBmbiBwdXQoJnNlbGYsIGVudHJ5OiAmS3ZUaWVyRW50cnkpIC0+IGlvOjpSZXN1bHQ8KCk+OwogICAgZm4gcmVtb3ZlKCZzZWxmLCBrZXk6ICZLdkJsb2NrS2V5KSAtPiBpbzo6UmVzdWx0PCgpPjsKICAgIGZuIGNsZWFyKCZzZWxmKSAtPiBpbzo6UmVzdWx0PCgpPiB7CiAgICAgICAgRXJyKGlvOjpFcnJvcjo6bmV3KAogICAgICAgICAgICBpbzo6RXJyb3JLaW5kOjpVbnN1cHBvcnRlZCwKICAgICAgICAgICAgZm9ybWF0ISgiS1YgdGllciB7fSBkb2VzIG5vdCBpbXBsZW1lbnQgY2xlYXIiLCBzZWxmLm5hbWUoKSksCiAgICAgICAgKSkKICAgIH0KICAgIGZuIGhlYWx0aCgmc2VsZikgLT4gaW86OlJlc3VsdDwoKT4gewogICAgICAgIE9rKCgpKQogICAgfQp9CiIiIiwKKQoKcmVwbGFjZV9vbmNlKAogICAgInNyYy9rdi5ycyIsCiAgICAiIiIgICAgZm4gcmVtb3ZlKCZzZWxmLCBrZXk6ICZLdkJsb2NrS2V5KSAtPiBpbzo6UmVzdWx0PCgpPiB7CiAgICAgICAgc2VsZi5jYWNoZS5pbnZhbGlkYXRlKCZrZXkuY2FjaGVfa2V5KCkpCiAgICB9Cn0KIiIiLAogICAgIiIiICAgIGZuIHJlbW92ZSgmc2VsZiwga2V5OiAmS3ZCbG9ja0tleSkgLT4gaW86OlJlc3VsdDwoKT4gewogICAgICAgIHNlbGYuY2FjaGUuaW52YWxpZGF0ZSgma2V5LmNhY2hlX2tleSgpKQogICAgfQoKICAgIGZuIGNsZWFyKCZzZWxmKSAtPiBpbzo6UmVzdWx0PCgpPiB7CiAgICAgICAgc2VsZi5jYWNoZS5jbGVhcigpCiAgICB9Cn0KIiIiLAopCgpyZXBsYWNlX29uY2UoCiAgICAic3JjL2t2LnJzIiwKICAgICIiIiNbZGVyaXZlKERlYnVnLCBDbG9uZSwgQ29weSwgRGVmYXVsdCwgUGFydGlhbEVxLCBFcSldCnB1YiBzdHJ1Y3QgS3ZFbmdpbmVTdGF0cyB7CiIiIiwKICAgICIiIiNbZGVyaXZlKERlYnVnLCBDbG9uZSwgUGFydGlhbEVxLCBFcSldCnB1YiBzdHJ1Y3QgS3ZUaWVySGVhbHRoIHsKICAgIHB1YiBuYW1lOiBTdHJpbmcsCiAgICBwdWIgaGVhbHRoeTogYm9vbCwKICAgIHB1YiBlcnJvcjogT3B0aW9uPFN0cmluZz4sCn0KCiNbZGVyaXZlKERlYnVnLCBDbG9uZSwgQ29weSwgRGVmYXVsdCwgUGFydGlhbEVxLCBFcSldCnB1YiBzdHJ1Y3QgS3ZFbmdpbmVTdGF0cyB7CiIiIiwKKQoKcmVwbGFjZV9vbmNlKAogICAgInNyYy9rdi5ycyIsCiAgICAiIiIgICAgcHViIGZuIGludmFsaWRhdGUoJnNlbGYsIGtleTogJkt2QmxvY2tLZXkpIC0+IGlvOjpSZXN1bHQ8KCk+IHsKICAgICAgICBmb3IgdGllciBpbiAmc2VsZi5pbm5lci50aWVycyB7CiAgICAgICAgICAgIHRpZXIucmVtb3ZlKGtleSk/OwogICAgICAgIH0KICAgICAgICBsZXQgbXV0IHN0YXRzID0gc2VsZi5zdGF0c19tdXQoKT87CiAgICAgICAgc3RhdHMuaW52YWxpZGF0aW9ucyA9IHN0YXRzLmludmFsaWRhdGlvbnMuc2F0dXJhdGluZ19hZGQoMSk7CiAgICAgICAgT2soKCkpCiAgICB9CgogICAgcHViIGZuIHByZWZldGNoX3RvKCZzZWxmLCBrZXlzOiBWZWM8S3ZCbG9ja0tleT4sIGRlc3RpbmF0aW9uX2luZGV4OiB1c2l6ZSkgLT4gS3ZQcmVmZXRjaCB7CiIiIiwKICAgICIiIiAgICBwdWIgZm4gaW52YWxpZGF0ZSgmc2VsZiwga2V5OiAmS3ZCbG9ja0tleSkgLT4gaW86OlJlc3VsdDwoKT4gewogICAgICAgIGZvciB0aWVyIGluICZzZWxmLmlubmVyLnRpZXJzIHsKICAgICAgICAgICAgdGllci5yZW1vdmUoa2V5KT87CiAgICAgICAgfQogICAgICAgIGxldCBtdXQgc3RhdHMgPSBzZWxmLnN0YXRzX211dCgpPzsKICAgICAgICBzdGF0cy5pbnZhbGlkYXRpb25zID0gc3RhdHMuaW52YWxpZGF0aW9ucy5zYXR1cmF0aW5nX2FkZCgxKTsKICAgICAgICBPaygoKSkKICAgIH0KCiAgICBwdWIgZm4gc2V0X3Bpbm5lZCgmc2VsZiwga2V5OiAmS3ZCbG9ja0tleSwgcGlubmVkOiBib29sKSAtPiBpbzo6UmVzdWx0PGJvb2w+IHsKICAgICAgICBsZXQgbm93ID0gc2VsZi5pbm5lci5jbG9jay5ub3dfc2Vjb25kcygpOwogICAgICAgIGxldCBtdXQgZm91bmQgPSBmYWxzZTsKICAgICAgICBmb3IgdGllciBpbiAmc2VsZi5pbm5lci50aWVycyB7CiAgICAgICAgICAgIGxldCBTb21lKG11dCBlbnRyeSkgPSB0aWVyLmdldChrZXkpPyBlbHNlIHsKICAgICAgICAgICAgICAgIGNvbnRpbnVlOwogICAgICAgICAgICB9OwogICAgICAgICAgICBpZiBpc19leHBpcmVkKGVudHJ5LmV4cGlyZXNfYXQsIG5vdykgewogICAgICAgICAgICAgICAgdGllci5yZW1vdmUoa2V5KT87CiAgICAgICAgICAgICAgICBsZXQgbXV0IHN0YXRzID0gc2VsZi5zdGF0c19tdXQoKT87CiAgICAgICAgICAgICAgICBzdGF0cy5leHBpcmF0aW9ucyA9IHN0YXRzLmV4cGlyYXRpb25zLnNhdHVyYXRpbmdfYWRkKDEpOwogICAgICAgICAgICAgICAgY29udGludWU7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgZW50cnkucGlubmVkID0gcGlubmVkOwogICAgICAgICAgICB0aWVyLnB1dCgmZW50cnkpPzsKICAgICAgICAgICAgZm91bmQgPSB0cnVlOwogICAgICAgIH0KICAgICAgICBPayhmb3VuZCkKICAgIH0KCiAgICBwdWIgZm4gY2xlYXIoJnNlbGYpIC0+IGlvOjpSZXN1bHQ8KCk+IHsKICAgICAgICBsZXQgbXV0IGZpcnN0X2Vycm9yID0gTm9uZTsKICAgICAgICBmb3IgdGllciBpbiAmc2VsZi5pbm5lci50aWVycyB7CiAgICAgICAgICAgIGlmIGxldCBFcnIoZXJyb3IpID0gdGllci5jbGVhcigpIHsKICAgICAgICAgICAgICAgIGlmIGZpcnN0X2Vycm9yLmlzX25vbmUoKSB7CiAgICAgICAgICAgICAgICAgICAgZmlyc3RfZXJyb3IgPSBTb21lKGVycm9yKTsKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgIH0KICAgICAgICBtYXRjaCBmaXJzdF9lcnJvciB7CiAgICAgICAgICAgIFNvbWUoZXJyb3IpID0+IEVycihlcnJvciksCiAgICAgICAgICAgIE5vbmUgPT4gT2soKCkpLAogICAgICAgIH0KICAgIH0KCiAgICBwdWIgZm4gaGVhbHRoKCZzZWxmKSAtPiBWZWM8S3ZUaWVySGVhbHRoPiB7CiAgICAgICAgc2VsZi5pbm5lcgogICAgICAgICAgICAudGllcnMKICAgICAgICAgICAgLml0ZXIoKQogICAgICAgICAgICAubWFwKHx0aWVyfCBtYXRjaCB0aWVyLmhlYWx0aCgpIHsKICAgICAgICAgICAgICAgIE9rKCgpKSA9PiBLdlRpZXJIZWFsdGggewogICAgICAgICAgICAgICAgICAgIG5hbWU6IHRpZXIubmFtZSgpLnRvX3N0cmluZygpLAogICAgICAgICAgICAgICAgICAgIGhlYWx0aHk6IHRydWUsCiAgICAgICAgICAgICAgICAgICAgZXJyb3I6IE5vbmUsCiAgICAgICAgICAgICAgICB9LAogICAgICAgICAgICAgICAgRXJyKGVycm9yKSA9PiBLdlRpZXJIZWFsdGggewogICAgICAgICAgICAgICAgICAgIG5hbWU6IHRpZXIubmFtZSgpLnRvX3N0cmluZygpLAogICAgICAgICAgICAgICAgICAgIGhlYWx0aHk6IGZhbHNlLAogICAgICAgICAgICAgICAgICAgIGVycm9yOiBTb21lKGVycm9yLnRvX3N0cmluZygpKSwKICAgICAgICAgICAgICAgIH0sCiAgICAgICAgICAgIH0pCiAgICAgICAgICAgIC5jb2xsZWN0KCkKICAgIH0KCiAgICBwdWIgZm4gcHJlZmV0Y2hfdG8oJnNlbGYsIGtleXM6IFZlYzxLdkJsb2NrS2V5PiwgZGVzdGluYXRpb25faW5kZXg6IHVzaXplKSAtPiBLdlByZWZldGNoIHsKIiIiLAopCgpyZXBsYWNlX29uY2UoCiAgICAic3JjL2xpYi5ycyIsCiAgICAiIiJtb2Qga3Y7Cm1vZCBwb2xpY3k7Cm1vZCBzdG9yZTsKIiIiLAogICAgIiIibW9kIGRldmljZTsKbW9kIGt2Owptb2QgbGxhbWFfY3BwOwptb2QgcG9saWN5Owptb2QgcmVtb3RlOwptb2QgcmV1c2U7Cm1vZCBzdG9yZTsKIiIiLAopCgpyZXBsYWNlX29uY2UoCiAgICAic3JjL2xpYi5ycyIsCiAgICAiIiJwdWIgdXNlIGt2Ojp7CiAgICBDb250ZXh0Q2FjaGVUaWVyLCBDb3B5VHJhbnNwb3J0LCBLdkFsbG9jYXRvciwgS3ZCbG9jaywgS3ZCbG9ja0tleSwgS3ZCbG9ja1JhbmdlLAogICAgS3ZDYXB0dXJlUmVxdWVzdCwgS3ZFbmdpbmUsIEt2RW5naW5lQnVpbGRlciwgS3ZFbmdpbmVTdGF0cywgS3ZQcmVmZXRjaCwgS3ZUaWVyLCBLdlRpZXJFbnRyeSwKICAgIEt2VHJhbnNwb3J0LCBLdldyaXRlUG9saWN5LCBQcmVmZXRjaFJlcG9ydCwgUHJlZml4SW5kZXgsIFByZWZpeE1hdGNoLCBSdW50aW1lS3ZBZGFwdGVyLAogICAgVmVjQWxsb2NhdG9yLAp9OwoiIiIsCiAgICAiIiJwdWIgdXNlIGRldmljZTo6ewogICAgRGV2aWNlQWxsb2NGbiwgRGV2aWNlQnVmZmVyLCBEZXZpY2VEb3dubG9hZEZuLCBEZXZpY2VGcmVlRm4sIERldmljZUhlYWx0aEZuLCBEZXZpY2VLdlRpZXIsCiAgICBEZXZpY2VNZW1vcnksIERldmljZVVwbG9hZEZuLCBGZmlEZXZpY2VNZW1vcnksIEZmaURldmljZU9wcywgSG9zdERldmljZU1lbW9yeSwKfTsKcHViIHVzZSBrdjo6ewogICAgQ29udGV4dENhY2hlVGllciwgQ29weVRyYW5zcG9ydCwgS3ZBbGxvY2F0b3IsIEt2QmxvY2ssIEt2QmxvY2tLZXksIEt2QmxvY2tSYW5nZSwKICAgIEt2Q2FwdHVyZVJlcXVlc3QsIEt2RW5naW5lLCBLdkVuZ2luZUJ1aWxkZXIsIEt2RW5naW5lU3RhdHMsIEt2UHJlZmV0Y2gsIEt2VGllciwgS3ZUaWVyRW50cnksCiAgICBLdlRpZXJIZWFsdGgsIEt2VHJhbnNwb3J0LCBLdldyaXRlUG9saWN5LCBQcmVmZXRjaFJlcG9ydCwgUHJlZml4SW5kZXgsIFByZWZpeE1hdGNoLAogICAgUnVudGltZUt2QWRhcHRlciwgVmVjQWxsb2NhdG9yLAp9OwpwdWIgdXNlIGxsYW1hX2NwcDo6ewogICAgRmZpTGxhbWFDcHBLdkFwaSwgTGxhbWFDcHBBZGFwdGVyLCBMbGFtYUNwcEZmaU9wcywgTGxhbWFDcHBLdkFwaSwgTGxhbWFIZWFsdGhGbiwKICAgIExsYW1hS3ZTbGljZSwgTGxhbWFSZWFkS3ZGbiwgTGxhbWFXcml0ZUt2Rm4sIE1vY2tMbGFtYUNwcEt2QXBpLAp9OwpwdWIgdXNlIHJlbW90ZTo6e1JlbW90ZUxpbWl0cywgVGNwS3ZTZXJ2ZXIsIFRjcEt2VGllcn07CnB1YiB1c2UgcmV1c2U6OntyZXN0b3JlX3JldXNlLCBSZWxvY2F0YWJsZVJ1bnRpbWVLdkFkYXB0ZXIsIFJldXNlU3BhbiwgU2VnbWVudEluZGV4fTsKIiIiLAopCgpjYXJnbyA9IFBhdGgoIkNhcmdvLnRvbWwiKQp0ZXh0ID0gY2FyZ28ucmVhZF90ZXh0KCkKdGV4dCA9IHRleHQucmVwbGFjZSgndmVyc2lvbiA9ICIwLjQuMCInLCAndmVyc2lvbiA9ICIwLjUuMCInLCAxKQp0ZXh0ID0gdGV4dC5yZXBsYWNlKAogICAgJ2Rlc2NyaXB0aW9uID0gIkRJLWZpcnN0IFJ1c3QgY2FjaGUgd2l0aCBjb21wb3NhYmxlIHN0b3JhZ2UgdGllcnMgYW5kIHJ1bnRpbWUtbmV1dHJhbCBLViBvcmNoZXN0cmF0aW9uLiInLAogICAgJ2Rlc2NyaXB0aW9uID0gIkRJLWZpcnN0IFJ1c3QgS1YgY2FjaGUgd2l0aCBkZXZpY2UgdGllcnMsIHJlbW90ZSBzZXJ2aWNlIG1vZGUsIHJ1bnRpbWUgYWRhcHRlcnMsIGFuZCByZXVzZSBvcmNoZXN0cmF0aW9uLiInLAogICAgMSwKKQpjYXJnby53cml0ZV90ZXh0KHRleHQpCgpjaGFuZ2Vsb2cgPSBQYXRoKCJDSEFOR0VMT0cubWQiKQpleGlzdGluZyA9IGNoYW5nZWxvZy5yZWFkX3RleHQoKQplbnRyeSA9ICIiIiMjIDAuNS4wIC0gMjAyNi0wOC0yOAoKLSBBZGRlZCBhIHN0YW5kYWxvbmUgc3RkLW9ubHkgVENQIEtWIHNlcnZpY2UgYW5kIGBUY3BLdlRpZXJgIGNsaWVudCB3aXRoIGJvdW5kZWQgcGF5bG9hZHMsIGNvbm5lY3Rpb24gbGltaXRzLCB0aW1lb3V0cywgaGVhbHRoIGNoZWNrcywgY2xlYXIsIGdldCwgcHV0LCBhbmQgcmVtb3ZlIG9wZXJhdGlvbnMuCi0gQWRkZWQgYERldmljZUt2VGllcmAsIGEgZGV2aWNlLWJ1ZmZlciBvd25lcnNoaXAgbGF5ZXIsIGEgaG9zdCByZWZlcmVuY2UgYmFja2VuZCwgYW5kIGFuIHVuc2FmZSBvcHQtaW4gRkZJIGNhbGxiYWNrIGJyaWRnZSBmb3IgYWNjZWxlcmF0b3IgcnVudGltZXMuCi0gQWRkZWQgYSBsbGFtYS5jcHAgaG9zdC1jYWxsYmFjayBydW50aW1lIGFkYXB0ZXIgd2l0aCBjYXB0dXJlLCByZXN0b3JlLCBoZWFsdGgsIGFuZCByZWxvY2F0ZWQgcmVzdG9yZSBmb3IgZXhhY3QgcmV1c2FibGUgc2VnbWVudHMuCi0gQWRkZWQgYFNlZ21lbnRJbmRleGAgYW5kIGByZXN0b3JlX3JldXNlYCBmb3IgZGV0ZXJtaW5pc3RpYyBibG9jay1hbGlnbmVkIG5vbi1wcmVmaXggZXhhY3Qgc2VnbWVudCByZXVzZS4KLSBBZGRlZCB0aWVyIGhlYWx0aCwgY2xlYXIsIGFuZCBwaW4vdW5waW4gY29udHJvbCBvcGVyYXRpb25zIHRvIGBLdkVuZ2luZWAuCi0gS2VwdCBuZXR3b3JrL2RldmljZS9ydW50aW1lIGludGVncmF0aW9ucyBvcHRpb25hbCBhbmQgZGVwZW5kZW5jeS1pbmplY3RlZDsgdGhlIGNvcmUgcmVtYWlucyBmcmVlIG9mIG1hbmRhdG9yeSBhc3luYywgbmV0d29ya2luZyBmcmFtZXdvcmssIEdQVSBTREssIG9yIGluZmVyZW5jZS1lbmdpbmUgZGVwZW5kZW5jaWVzLgoKIiIiCmlmICIjIyAwLjUuMCAtIDIwMjYtMDgtMjgiIG5vdCBpbiBleGlzdGluZzoKICAgIGlmIGV4aXN0aW5nLnN0YXJ0c3dpdGgoIiMgQ2hhbmdlbG9nIik6CiAgICAgICAgcmVzdCA9IGV4aXN0aW5nW2xlbigiIyBDaGFuZ2Vsb2ciKTpdLmxzdHJpcCgiXG4iKQogICAgICAgIGV4aXN0aW5nID0gIiMgQ2hhbmdlbG9nXG5cbiIgKyBlbnRyeSArIHJlc3QKICAgIGVsc2U6CiAgICAgICAgZXhpc3RpbmcgPSBlbnRyeSArIGV4aXN0aW5nCmNoYW5nZWxvZy53cml0ZV90ZXh0KGV4aXN0aW5nKQoKcmVhZG1lID0gUGF0aCgiUkVBRE1FLm1kIikKZXhpc3RpbmcgPSByZWFkbWUucmVhZF90ZXh0KCkKc2VjdGlvbiA9ICIiIgojIyBEaXN0cmlidXRlZC9ydW50aW1lIEtWIGxheWVyCgpSaXZldENhY2hlIGluY2x1ZGVzIG9wdGlvbmFsIGV4ZWN1dGlvbiBhZGFwdGVycyBhcm91bmQgdGhlIERJLWZpcnN0IGNhY2hlIGNvcmU6CgotIGBUY3BLdlNlcnZlcmAgKyBgVGNwS3ZUaWVyYDogYSBzdGFuZGFsb25lIGJpbmFyeSBUQ1AgS1Ygc2VydmljZS9jbGllbnQgZm9yIGNyb3NzLXByb2Nlc3Mgb3IgY3Jvc3MtaG9zdCBjYWNoZSBzaGFyaW5nLiBUaGUgYnVuZGxlZCBwcm90b2NvbCBpbnRlbnRpb25hbGx5IGRvZXMgbm90IGVtYmVkIGF1dGhlbnRpY2F0aW9uIG9yIFRMUzsgdXNlIGl0IG9ubHkgb24gdHJ1c3RlZCBhcHBsaWNhdGlvbiBuZXR3b3JrcyBvciBiZWhpbmQgYW4gYXV0aGVudGljYXRlZC90dW5uZWxlZCBib3VuZGFyeS4KLSBgRGV2aWNlS3ZUaWVyYDogc3RvcmVzIEtWIHBheWxvYWRzIGluIGJ1ZmZlcnMgb3duZWQgYnkgYW4gaW5qZWN0ZWQgYERldmljZU1lbW9yeWAgaW1wbGVtZW50YXRpb24uIGBGZmlEZXZpY2VNZW1vcnlgIGV4cG9zZXMgYW4gdW5zYWZlIGNhbGxiYWNrIEFCSSB0aGF0IGFjY2VsZXJhdG9yIGludGVncmF0aW9ucyBjYW4gaW1wbGVtZW50IHdpdGhvdXQgbGlua2luZyBhIEdQVSBTREsgaW50byB0aGUgY29yZSBjcmF0ZS4KLSBgTGxhbWFDcHBBZGFwdGVyYDogYSBob3N0LWNhbGxiYWNrIGFkYXB0ZXIgdGhhdCBtYXBzIFJpdmV0Q2FjaGUgYmxvY2sgcmFuZ2VzIHRvIGNhcHR1cmUvcmVzdG9yZSBjYWxsYmFja3Mgc3VwcGxpZWQgYnkgYW4gZW1iZWRkaW5nIGxsYW1hLmNwcCBob3N0LiBUaGlzIGNhbGxiYWNrIGNvbnRyYWN0IGlzIGEgUml2ZXRDYWNoZSBpbnRlZ3JhdGlvbiBzdXJmYWNlIGFuZCBkb2VzIG5vdCBjbGFpbSBjb21wYXRpYmlsaXR5IHdpdGggYW4gdXBzdHJlYW0gcHJpdmF0ZS9pbnRlcm5hbCBBQkkuCi0gYFNlZ21lbnRJbmRleGA6IGZpbmRzIGV4YWN0IGNvbnRpZ3VvdXMgdG9rZW4gbWF0Y2hlcyBhdCBub24tcHJlZml4IHBvc2l0aW9ucywgYWxpZ25zIHRoZW0gdG8gY29tcGxldGUgY2FjaGVkIGJsb2NrcywgYW5kIGNhbiByZXN0b3JlIHRob3NlIGJsb2NrcyBhdCBhIHJlbG9jYXRlZCB0b2tlbiBwb3NpdGlvbiB0aHJvdWdoIGBSZWxvY2F0YWJsZVJ1bnRpbWVLdkFkYXB0ZXJgLgotIGBLdkVuZ2luZTo6aGVhbHRoYCwgYEt2RW5naW5lOjpjbGVhcmAsIGFuZCBgS3ZFbmdpbmU6OnNldF9waW5uZWRgIHByb3ZpZGUgZGlyZWN0IG1hbmFnZW1lbnQgb3BlcmF0aW9ucyBhY3Jvc3MgY29uZmlndXJlZCB0aWVycy4KClRoZSBzdGFuZGFsb25lIHNlcnZlciBjYW4gYmUgc3RhcnRlZCB3aXRoOgoKYGBgdGV4dApjYXJnbyBydW4gLS1iaW4gcml2ZXQtY2FjaGUtc2VydmVyIC0tIDEyNy4wLjAuMTo2NTQzMiAuL3JpdmV0LWNhY2hlLWRhdGEgNTEyIDgxOTIKYGBgCgpQdWJsaWMgY2FwYWJpbGl0eSBjbGFpbXMgYXJlIGxpbWl0ZWQgdG8gY29kZSBwYXRocyBpbXBsZW1lbnRlZCBhbmQgdGVzdGVkIGluIHRoaXMgcmVwb3NpdG9yeS4gSGFyZHdhcmUgdGhyb3VnaHB1dCwgYSBzcGVjaWZpYyBleHRlcm5hbCBydW50aW1lIGJ1aWxkLCB0cmFuc3BvcnQgaW50ZXJvcGVyYWJpbGl0eSBvdXRzaWRlIHRoZSBSaXZldENhY2hlIHByb3RvY29sLCBhbmQgY29tcGFyYXRpdmUgcGVyZm9ybWFuY2UgcmVxdWlyZSBzZXBhcmF0ZSBpbXBsZW1lbnRhdGlvbi1zcGVjaWZpYyBldmlkZW5jZS4KIiIiCmlmICIjIyBEaXN0cmlidXRlZC9ydW50aW1lIEtWIGxheWVyIiBub3QgaW4gZXhpc3Rpbmc6CiAgICBleGlzdGluZyA9IGV4aXN0aW5nLnJzdHJpcCgpICsgIlxuXG4iICsgc2VjdGlvbi5zdHJpcCgpICsgIlxuIgpyZWFkbWUud3JpdGVfdGV4dChleGlzdGluZykKCmFyY2ggPSBQYXRoKCJkb2NzL2FyY2hpdGVjdHVyZS5tZCIpCmV4aXN0aW5nID0gYXJjaC5yZWFkX3RleHQoKQpzZWN0aW9uID0gIiIiCiMjIHYwLjUgZXhlY3V0aW9uIGFkYXB0ZXJzCgpUaGUgY29yZSBjYWNoZSByZW1haW5zIHJ1bnRpbWUtbmV1dHJhbC4gT3B0aW9uYWwgc2libGluZyBtb2R1bGVzIHN1cHBseSBleGVjdXRpb24tc3BlY2lmaWMgYm91bmRhcmllczoKCi0gUmVtb3RlIHNlcnZpY2UgbW9kZSB1c2VzIGEgdmVyc2lvbmVkIFJpdmV0Q2FjaGUgVENQIHByb3RvY29sIHdpdGggYm91bmRlZCBtZXNzYWdlcyBhbmQgZXhwbGljaXQgaGVhbHRoL2NsZWFyIG9wZXJhdGlvbnMuIEl0IGlzIGFuIGFwcGxpY2F0aW9uIHByb3RvY29sLCBub3QgYW4gYXV0aGVudGljYXRlZCBuZXR3b3JrIHBlcmltZXRlci4KLSBEZXZpY2Ugc3RvcmFnZSBvd25zIG9wYXF1ZSBidWZmZXIgaGFuZGxlcyB0aHJvdWdoIGBEZXZpY2VNZW1vcnlgLiBUaGUgRkZJIGltcGxlbWVudGF0aW9uIGRlbGVnYXRlcyBhbGxvY2F0aW9uL3VwbG9hZC9kb3dubG9hZC9mcmVlIHRvIGNhbGxlci1zdXBwbGllZCBjYWxsYmFja3MgYW5kIHRoZXJlZm9yZSBjYW4gYmUgYm91bmQgdG8gVnVsa2FuLCBST0NtL0hJUCwgQ1VEQSwgc2hhcmVkLW1lbW9yeSwgb3Igb3RoZXIgZGV2aWNlIHN5c3RlbXMgd2l0aG91dCBhZGRpbmcgdGhvc2UgU0RLcyB0byB0aGUgY29yZSBjcmF0ZS4KLSBUaGUgbGxhbWEuY3BwIGFkYXB0ZXIgZGVsZWdhdGVzIEtWIGV4dHJhY3Rpb24vaW5qZWN0aW9uIHRvIGhvc3QgY2FsbGJhY2tzIGRlZmluZWQgYnkgUml2ZXRDYWNoZS4gVGhpcyBhdm9pZHMgZGVwZW5kaW5nIG9uIHVuc3RhYmxlIGVuZ2luZSBpbnRlcm5hbHMgaW4gdGhlIGNvcmUgbGlicmFyeS4KLSBOb24tcHJlZml4IHJldXNlIGlzIGV4YWN0IGFuZCBibG9jay1hbGlnbmVkOiBgU2VnbWVudEluZGV4YCBmaW5kcyBjb250aWd1b3VzIHRva2VuIHN1YnNlcXVlbmNlcyBhbmQgb25seSByZXR1cm5zIGNvbXBsZXRlIHJlZ2lzdGVyZWQgS1YgYmxvY2tzLiBSZWxvY2F0aW9uIGlzIGRlbGVnYXRlZCB0byBhIHJ1bnRpbWUgYWRhcHRlci4gTm8gYXBwcm94aW1hdGUgcmVjb21wdXRhdGlvbiBvciBxdWFsaXR5LXJlY292ZXJ5IGFsZ29yaXRobSBpcyBpbXBsaWVkLgoiIiIKaWYgIiMjIHYwLjUgZXhlY3V0aW9uIGFkYXB0ZXJzIiBub3QgaW4gZXhpc3Rpbmc6CiAgICBleGlzdGluZyA9IGV4aXN0aW5nLnJzdHJpcCgpICsgIlxuXG4iICsgc2VjdGlvbi5zdHJpcCgpICsgIlxuIgphcmNoLndyaXRlX3RleHQoZXhpc3RpbmcpCg=='))"
+      - name: Remove helper and format
         shell: bash
         run: |
           rm -f .github/workflows/temp-finish-v0.5.0.yml
           cargo fmt --all
-      - name: Compile and test before commit
+      - name: Test
         run: cargo test --all-targets
-      - name: Clippy before commit
+      - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Commit clean candidate
         shell: bash
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git commit -m 'Complete distributed and runtime KV execution layer'
           test -z "$(git status --porcelain)"
-      - name: Exact clean candidate package gate
+      - name: Package exact candidate
         shell: bash
         run: |
           cargo fmt --all -- --check
