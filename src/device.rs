@@ -290,6 +290,10 @@ impl DeviceKvTier {
             .map_err(|_| io::Error::other("device tier lock poisoned"))?
             .len())
     }
+
+    pub fn is_empty(&self) -> io::Result<bool> {
+        Ok(self.len()? == 0)
+    }
 }
 
 impl KvTier for DeviceKvTier {
@@ -427,8 +431,10 @@ mod tests {
         };
         tier.put(&entry).expect("put");
         assert_eq!(tier.len().expect("len"), 1);
+        assert!(!tier.is_empty().expect("is_empty"));
         assert_eq!(tier.get(&entry.block.key).expect("get"), Some(entry.clone()));
         tier.remove(&entry.block.key).expect("remove");
+        assert!(tier.is_empty().expect("is_empty after remove"));
         assert!(tier.get(&entry.block.key).expect("get after remove").is_none());
     }
 }
