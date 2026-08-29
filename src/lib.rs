@@ -1,6 +1,13 @@
+mod kv;
 mod policy;
 mod store;
 
+pub use kv::{
+    ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
+    KvCaptureRequest, KvEngine, KvEngineBuilder, KvEngineStats, KvPrefetch, KvTier, KvTierEntry,
+    KvTransport, KvWritePolicy, PrefetchReport, PrefixIndex, PrefixMatch, RuntimeKvAdapter,
+    VecAllocator,
+};
 pub use policy::{
     CacheEvent, Clock, EvictionCandidate, EvictionPolicy, KeyStrategy, LruEviction, MetricsSink,
     NoopMetrics, Sha256KeyStrategy, SystemClock,

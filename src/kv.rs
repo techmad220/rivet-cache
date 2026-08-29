@@ -9,6 +9,16 @@ use std::time::Duration;
 const KV_KEY_DOMAIN: &[u8] = b"RIVET_KV_V1\0";
 const TIER_ENVELOPE_MAGIC: &[u8; 6] = b"RKV01\n";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KvBlockRange {
+    pub block_index: u32,
+    pub token_start: u32,
+    pub token_count: u32,
+    pub layer_start: u32,
+    pub layer_count: u32,
+    pub layout_version: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KvBlockKey {
     pub model_fingerprint: String,
@@ -25,12 +35,7 @@ impl KvBlockKey {
     pub fn from_prefix(
         model_fingerprint: impl Into<String>,
         prefix_tokens: &[u32],
-        block_index: u32,
-        token_start: u32,
-        token_count: u32,
-        layer_start: u32,
-        layer_count: u32,
-        layout_version: u32,
+        range: KvBlockRange,
     ) -> Self {
         let mut sequence_hasher = Sha256::new();
         sequence_hasher.update(KV_KEY_DOMAIN);
@@ -43,12 +48,12 @@ impl KvBlockKey {
         Self {
             model_fingerprint: model_fingerprint.into(),
             sequence_hash,
-            block_index,
-            token_start,
-            token_count,
-            layer_start,
-            layer_count,
-            layout_version,
+            block_index: range.block_index,
+            token_start: range.token_start,
+            token_count: range.token_count,
+            layer_start: range.layer_start,
+            layer_count: range.layer_count,
+            layout_version: range.layout_version,
         }
     }
 
@@ -182,16 +187,11 @@ impl KvTransport for CopyTransport {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum KvWritePolicy {
+    #[default]
     Primary,
     All,
-}
-
-impl Default for KvWritePolicy {
-    fn default() -> Self {
-        Self::Primary
-    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -356,12 +356,7 @@ impl KvEngine {
             .collect()
     }
 
-    pub fn put(
-        &self,
-        block: KvBlock,
-        ttl: Option<Duration>,
-        pinned: bool,
-    ) -> io::Result<()> {
+    pub fn put(&self, block: KvBlock, ttl: Option<Duration>, pinned: bool) -> io::Result<()> {
         let expires_at = ttl
             .filter(|ttl| !ttl.is_zero())
             .map(|ttl| {
@@ -385,7 +380,8 @@ impl KvEngine {
                 }
             }
         }
-        self.stats_mut()?.writes = self.stats_mut()?.writes.saturating_add(1);
+        let mut stats = self.stats_mut()?;
+        stats.writes = stats.writes.saturating_add(1);
         Ok(())
     }
 
@@ -633,7 +629,9 @@ impl KvPrefetch {
             )
         })?;
         if let Some(handle) = self.handle.take() {
-            handle.join().map_err(|_| io::Error::other("KV prefetch worker panicked"))?;
+            handle
+                .join()
+                .map_err(|_| io::Error::other("KV prefetch worker panicked"))?;
         }
         result
     }
@@ -678,12 +676,14 @@ impl KvCaptureRequest {
             keys.push(KvBlockKey::from_prefix(
                 self.model_fingerprint.clone(),
                 &self.tokens[..prefix_end],
-                block_index as u32,
-                token_start as u32,
-                chunk.len() as u32,
-                self.layer_start,
-                self.layer_count,
-                self.layout_version,
+                KvBlockRange {
+                    block_index: block_index as u32,
+                    token_start: token_start as u32,
+                    token_count: chunk.len() as u32,
+                    layer_start: self.layer_start,
+                    layer_count: self.layer_count,
+                    layout_version: self.layout_version,
+                },
             ));
         }
         Ok(keys)
@@ -841,7 +841,9 @@ fn read_u64(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
         io::Error::new(io::ErrorKind::UnexpectedEof, "truncated KV tier envelope")
     })?;
     *cursor = end;
-    Ok(u64::from_le_bytes(raw.try_into().expect("slice length checked")))
+    Ok(u64::from_le_bytes(
+        raw.try_into().expect("slice length checked"),
+    ))
 }
 
 fn is_expired(expires_at: u64, now: u64) -> bool {
@@ -881,7 +883,18 @@ mod tests {
     }
 
     fn key(tokens: &[u32]) -> KvBlockKey {
-        KvBlockKey::from_prefix("model-a", tokens, 0, 0, tokens.len() as u32, 0, 32, 1)
+        KvBlockKey::from_prefix(
+            "model-a",
+            tokens,
+            KvBlockRange {
+                block_index: 0,
+                token_start: 0,
+                token_count: tokens.len() as u32,
+                layer_start: 0,
+                layer_count: 32,
+                layout_version: 1,
+            },
+        )
     }
 
     fn tier(name: &str) -> Arc<dyn KvTier> {
@@ -903,7 +916,18 @@ mod tests {
         assert_ne!(first.cache_key(), different.cache_key());
         assert_eq!(first.cache_key().len(), 64);
 
-        let other_model = KvBlockKey::from_prefix("model-b", &[1, 2, 3], 0, 0, 3, 0, 32, 1);
+        let other_model = KvBlockKey::from_prefix(
+            "model-b",
+            &[1, 2, 3],
+            KvBlockRange {
+                block_index: 0,
+                token_start: 0,
+                token_count: 3,
+                layer_start: 0,
+                layer_count: 32,
+                layout_version: 1,
+            },
+        );
         assert_ne!(first.cache_key(), other_model.cache_key());
     }
 

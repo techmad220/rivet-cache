@@ -15,6 +15,12 @@ The default configuration combines a bounded in-memory tier with optional bounde
 - Composable ordered storage layers with replicated writes.
 - Volatile `VolatileStore` reference backend.
 - Batch get/write helpers and explicit single/batch invalidation.
+- Runtime-neutral KV block/chunk identity.
+- Ordered KV tiers with promotion and explicit movement.
+- Background KV prefetch without an async-runtime dependency.
+- Injectable KV transport and allocator boundaries.
+- Longest-prefix indexing for reusable KV block sets.
+- Runtime adapter contract for capture/restore integrations.
 - Injectable clock for deterministic TTL behavior.
 - Injectable key strategy.
 - Injectable metrics sink.
@@ -137,6 +143,56 @@ let cache = ContextCache::builder()
 `get_many` and `put_many` are convenience APIs built on the same validated single-entry paths, so TTL, eviction, persistence and telemetry semantics remain consistent. They are intentionally not transactions: an I/O error may occur after an earlier item has committed.
 
 `invalidate` and `invalidate_many` explicitly remove keys from both the memory tier and the configured persistent store. Missing keys are treated as already invalidated.
+
+
+## KV orchestration
+
+RivetCache includes an optional runtime-neutral KV layer on top of the generic cache core. It does not assume a GPU API, model runtime, network transport, or memory allocator.
+
+`KvBlockKey` identities are derived from a versioned RivetCache KV domain plus the model fingerprint, token-prefix hash, block position, token range, layer range, and layout version. This prevents blocks from different model/layout contexts from sharing an identity accidentally.
+
+`KvEngine` composes ordered `KvTier` implementations. A lower-priority hit can be promoted into faster tiers, blocks can be moved explicitly between tiers, and `prefetch_to` can populate a target tier on a background standard-library thread. `KvTransport` and `KvAllocator` are injected, so a host can provide pinned-host memory, device memory, IPC, RDMA, or network transfer implementations without adding those dependencies to the core crate.
+
+`ContextCacheTier` adapts an existing `ContextCache` into a KV tier. KV metadata is carried in a versioned envelope, preserving absolute expiration and pin state during movement between tiers.
+
+```rust
+use rivet_cache::{
+    ContextCache, ContextCacheTier, KvBlock, KvBlockKey, KvBlockRange, KvEngine,
+    KvWritePolicy,
+};
+use std::sync::Arc;
+
+let fast_cache = Arc::new(ContextCache::builder().memory_capacity(64 << 20).build()?);
+let slow_cache = Arc::new(ContextCache::builder().memory_capacity(512 << 20).build()?);
+
+let engine = KvEngine::builder()
+    .tier(ContextCacheTier::new("host-fast", fast_cache)?)
+    .tier(ContextCacheTier::new("host-capacity", slow_cache)?)
+    .write_policy(KvWritePolicy::All)
+    .build()?;
+
+let key = KvBlockKey::from_prefix(
+    "model-fingerprint",
+    &[10, 20, 30],
+    KvBlockRange {
+        block_index: 0,
+        token_start: 0,
+        token_count: 3,
+        layer_start: 0,
+        layer_count: 32,
+        layout_version: 1,
+    },
+);
+engine.put(KvBlock::new(key.clone(), vec![1, 2, 3, 4])?, None, false)?;
+assert!(engine.get(&key)?.is_some());
+# Ok::<(), std::io::Error>(())
+```
+
+`RuntimeKvAdapter` is deliberately a contract rather than a built-in dependency on a specific inference engine. Runtime integrations can implement capture/restore while keeping their FFI and engine lifecycle outside RivetCache core.
+
+### Prefix indexing
+
+`KvCaptureRequest::block_keys` builds prefix-scoped block identities for a token sequence. `PrefixIndex` can register completed sequences and return the longest registered prefix for a later request with the same model fingerprint. The index is in-process and deterministic; distributed index implementations can be supplied separately without changing block identity.
 
 ## Development
 
