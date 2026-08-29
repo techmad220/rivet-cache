@@ -758,6 +758,31 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct SecondaryMemoryTier(MemoryTier);
+
+    impl KvTier for SecondaryMemoryTier {
+        fn name(&self) -> &str {
+            "memory-secondary"
+        }
+
+        fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>> {
+            self.0.get(key)
+        }
+
+        fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
+            self.0.put(entry)
+        }
+
+        fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
+            self.0.remove(key)
+        }
+
+        fn clear(&self) -> io::Result<()> {
+            self.0.clear()
+        }
+    }
+
     fn block(index: u32, value: u8) -> KvBlock {
         KvBlock::new(
             KvBlockKey::from_prefix(
@@ -809,7 +834,7 @@ mod tests {
     fn batch_move_reports_a_miss_without_failing() {
         let engine = KvEngine::builder()
             .tier(MemoryTier::default())
-            .tier(MemoryTier::default())
+            .tier(SecondaryMemoryTier::default())
             .build()
             .unwrap();
         let pipeline = AsyncKvPipeline::new(engine.clone(), 1, 4, None).unwrap();
