@@ -31,6 +31,7 @@ jobs:
           p.write_text(s, encoding='utf-8')
           p = Path('src/bin/rivet-cache-llama-slot.rs')
           s = p.read_text(encoding='utf-8').replace('RIVET_LLAMA_SLOT_CONTAINS={} ', 'RIVET_LLAMA_SLOT_CONTAINS={}')
+          s = s.replace('.with_timeout(Duration::from_secs(180))?,', '.with_timeout(Duration::from_secs(180))?\n            .with_max_response_bytes(64 * 1024)?,')
           p.write_text(s, encoding='utf-8')
       - name: Format
         run: cargo fmt --all
