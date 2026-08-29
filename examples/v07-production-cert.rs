@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn main() -> io::Result<()> {
-    let command = std::env::args().nth(1).unwrap_or_else(|| "all".to_owned());
+    let command = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "all".to_owned());
     match command.as_str() {
         "native-memory" => certify_native_memory(),
         "controller" => certify_controller(),
@@ -43,13 +45,17 @@ fn certify_native_memory() -> io::Result<()> {
     }
     for (index, byte) in first.iter().copied().enumerate() {
         if byte != (index % 251) as u8 {
-            return Err(io::Error::other("native page-locked memory verification failed"));
+            return Err(io::Error::other(
+                "native page-locked memory verification failed",
+            ));
         }
     }
     drop(first);
     let second = pool.acquire(1024, None)?;
     if second.capacity() < 4096 {
-        return Err(io::Error::other("pinned memory pool did not reuse cached region"));
+        return Err(io::Error::other(
+            "pinned memory pool did not reuse cached region",
+        ));
     }
     let stats = pool.stats()?;
     if stats.allocations != 1 || stats.reuses < 1 {
@@ -95,8 +101,7 @@ fn certify_controller() -> io::Result<()> {
             "controller health response failed: {health}"
         )));
     }
-    let metrics_response =
-        http_request(&addr, "GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
+    let metrics_response = http_request(&addr, "GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")?;
     if !metrics_response.starts_with("HTTP/1.1 200")
         || !metrics_response.contains("rivet_controller_nodes 1")
         || !metrics_response.contains("rivet_controller_tenants 1")
@@ -124,11 +129,15 @@ fn certify_redis() -> io::Result<()> {
         .get(&entry.block.key)?
         .ok_or_else(|| io::Error::other("Redis connector missed freshly written entry"))?;
     if restored != entry {
-        return Err(io::Error::other("Redis connector round-trip changed KV entry"));
+        return Err(io::Error::other(
+            "Redis connector round-trip changed KV entry",
+        ));
     }
     tier.clear()?;
     if tier.get(&entry.block.key)?.is_some() {
-        return Err(io::Error::other("Redis namespace clear left KV entry behind"));
+        return Err(io::Error::other(
+            "Redis namespace clear left KV entry behind",
+        ));
     }
     println!("RIVET_V07_REDIS=PASS addr={address}");
     Ok(())
@@ -169,7 +178,9 @@ fn certify_s3() -> io::Result<()> {
         .get(&entry.block.key)?
         .ok_or_else(|| io::Error::other("S3 connector missed freshly written entry"))?;
     if restored != entry {
-        return Err(io::Error::other("S3 connector round-trip changed KV entry"));
+        return Err(io::Error::other(
+            "S3 connector round-trip changed KV entry",
+        ));
     }
     tier.remove(&entry.block.key)?;
     if tier.get(&entry.block.key)?.is_some() {
