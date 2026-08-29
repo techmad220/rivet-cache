@@ -12,6 +12,9 @@ The default configuration combines a bounded in-memory tier with optional bounde
 - Optional bounded persistent storage.
 - LRU by default, with injectable eviction policy.
 - Injectable persistent backend for remote/shared/custom stores.
+- Composable ordered storage layers with replicated writes.
+- Volatile `VolatileStore` reference backend.
+- Batch get/write helpers and explicit single/batch invalidation.
 - Injectable clock for deterministic TTL behavior.
 - Injectable key strategy.
 - Injectable metrics sink.
@@ -107,6 +110,33 @@ The default `Sha256KeyStrategy` retains the RivetCache v1 key domain:
 `RIVET_CACHE_V1`
 
 Applications that need a different key ABI can inject their own `KeyStrategy` and should version that strategy explicitly.
+
+
+## Composable storage layers
+
+`LayeredStore` combines independently injected `PersistentStore` backends without coupling the core to a network protocol or service. Reads search backends in configured priority order and writes are replicated to every backend.
+
+The layered implementation deliberately avoids automatic read promotion. This keeps byte accounting deterministic and makes promotion a caller-owned policy instead of hidden behavior. Existing replicas are checked before writes; conflicting payloads or metadata fail closed with `InvalidData` rather than silently choosing a copy.
+
+```rust
+use rivet_cache::{ContextCache, FileStore, LayeredStore, VolatileStore, PersistentStore};
+use std::sync::Arc;
+
+let hot: Arc<dyn PersistentStore> = Arc::new(VolatileStore::new());
+let durable: Arc<dyn PersistentStore> = Arc::new(FileStore::new("./cache")?);
+let stores = LayeredStore::new(vec![hot, durable])?;
+let cache = ContextCache::builder()
+    .persistent_capacity(512 * 1024 * 1024)
+    .persistent_store(stores)
+    .build()?;
+# Ok::<(), std::io::Error>(())
+```
+
+## Batch operations and invalidation
+
+`get_many` and `put_many` are convenience APIs built on the same validated single-entry paths, so TTL, eviction, persistence and telemetry semantics remain consistent. They are intentionally not transactions: an I/O error may occur after an earlier item has committed.
+
+`invalidate` and `invalidate_many` explicitly remove keys from both the memory tier and the configured persistent store. Missing keys are treated as already invalidated.
 
 ## Development
 

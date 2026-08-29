@@ -102,6 +102,7 @@ pub enum CacheEvent {
     PersistentEviction(u64),
     Expiration(u64),
     Corruption(u64),
+    Invalidation(u64),
     Clear,
 }
 

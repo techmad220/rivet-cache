@@ -1,8 +1,10 @@
 use sha2::{Digest, Sha256};
+use std::collections::{hash_map::Entry, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const MAGIC: &[u8; 8] = b"RIVET01\n";
 const HEADER_LEN: u64 = 8 + 8 + 1 + 8 + 32;
@@ -48,6 +50,246 @@ pub trait PersistentStore: Send + Sync {
     fn put_if_absent(&self, key: &str, entry: &StoredEntry) -> io::Result<PutOutcome>;
     fn remove(&self, key: &str) -> io::Result<()>;
     fn clear(&self) -> io::Result<()>;
+}
+
+/// Volatile in-process implementation of [`PersistentStore`].
+///
+/// This backend is useful for tests, ephemeral tiers, and as a reference
+/// implementation for custom stores. It intentionally does not survive process
+/// restart.
+#[derive(Default)]
+pub struct VolatileStore {
+    entries: Mutex<HashMap<String, (StoredEntry, u64)>>,
+    tick: AtomicU64,
+}
+
+impl VolatileStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> io::Result<usize> {
+        Ok(self.lock_entries()?.len())
+    }
+
+    pub fn is_empty(&self) -> io::Result<bool> {
+        Ok(self.lock_entries()?.is_empty())
+    }
+
+    fn lock_entries(&self) -> io::Result<MutexGuard<'_, HashMap<String, (StoredEntry, u64)>>> {
+        self.entries
+            .lock()
+            .map_err(|_| io::Error::other("memory store lock poisoned"))
+    }
+
+    fn next_tick(&self) -> u64 {
+        self.tick.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+    }
+}
+
+impl PersistentStore for VolatileStore {
+    fn load_index(&self) -> io::Result<StoreSnapshot> {
+        let entries = self.lock_entries()?;
+        Ok(StoreSnapshot {
+            entries: entries
+                .iter()
+                .map(|(key, (entry, last_access))| StoreRecord {
+                    key: key.clone(),
+                    stored_bytes: entry.value.len() as u64,
+                    expires_at: entry.expires_at,
+                    pinned: entry.pinned,
+                    last_access: *last_access,
+                })
+                .collect(),
+            corruptions: 0,
+        })
+    }
+
+    fn get(&self, key: &str) -> io::Result<Option<StoredEntry>> {
+        let tick = self.next_tick();
+        let mut entries = self.lock_entries()?;
+        let Some((entry, last_access)) = entries.get_mut(key) else {
+            return Ok(None);
+        };
+        *last_access = tick;
+        Ok(Some(entry.clone()))
+    }
+
+    fn put_if_absent(&self, key: &str, entry: &StoredEntry) -> io::Result<PutOutcome> {
+        let tick = self.next_tick();
+        let mut entries = self.lock_entries()?;
+        match entries.entry(key.to_string()) {
+            Entry::Occupied(existing) => Ok(PutOutcome {
+                inserted: false,
+                stored_bytes: existing.get().0.value.len() as u64,
+            }),
+            Entry::Vacant(slot) => {
+                let stored_bytes = entry.value.len() as u64;
+                slot.insert((entry.clone(), tick));
+                Ok(PutOutcome {
+                    inserted: true,
+                    stored_bytes,
+                })
+            }
+        }
+    }
+
+    fn remove(&self, key: &str) -> io::Result<()> {
+        self.lock_entries()?.remove(key);
+        Ok(())
+    }
+
+    fn clear(&self) -> io::Result<()> {
+        self.lock_entries()?.clear();
+        Ok(())
+    }
+}
+
+/// Ordered composition of multiple persistent-store implementations.
+///
+/// Reads search stores in priority order. Writes are replicated to every
+/// configured store. Existing copies are checked for metadata and payload
+/// agreement before a new replica is created. The implementation does not
+/// perform implicit read promotion, which keeps storage accounting deterministic
+/// and leaves promotion policy to the caller.
+#[derive(Clone)]
+pub struct LayeredStore {
+    stores: Vec<Arc<dyn PersistentStore>>,
+}
+
+impl LayeredStore {
+    pub fn new(stores: Vec<Arc<dyn PersistentStore>>) -> io::Result<Self> {
+        if stores.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "layered store requires at least one backend",
+            ));
+        }
+        Ok(Self { stores })
+    }
+
+    pub fn len(&self) -> usize {
+        self.stores.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stores.is_empty()
+    }
+}
+
+impl PersistentStore for LayeredStore {
+    fn load_index(&self) -> io::Result<StoreSnapshot> {
+        let mut merged: HashMap<String, StoreRecord> = HashMap::new();
+        let mut corruptions = 0_u64;
+
+        for store in &self.stores {
+            let snapshot = store.load_index()?;
+            corruptions = corruptions.saturating_add(snapshot.corruptions);
+            for record in snapshot.entries {
+                match merged.entry(record.key.clone()) {
+                    Entry::Vacant(slot) => {
+                        slot.insert(record);
+                    }
+                    Entry::Occupied(mut slot) => {
+                        let current = slot.get_mut();
+                        if current.expires_at != record.expires_at
+                            || current.pinned != record.pinned
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("layered store metadata mismatch for key {}", record.key),
+                            ));
+                        }
+                        current.stored_bytes =
+                            current.stored_bytes.saturating_add(record.stored_bytes);
+                        current.last_access = current.last_access.max(record.last_access);
+                    }
+                }
+            }
+        }
+
+        Ok(StoreSnapshot {
+            entries: merged.into_values().collect(),
+            corruptions,
+        })
+    }
+
+    fn get(&self, key: &str) -> io::Result<Option<StoredEntry>> {
+        for store in &self.stores {
+            if let Some(entry) = store.get(key)? {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
+    }
+
+    fn put_if_absent(&self, key: &str, entry: &StoredEntry) -> io::Result<PutOutcome> {
+        for store in &self.stores {
+            if let Some(existing) = store.get(key)? {
+                if existing != *entry {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("layered store payload mismatch for key {key}"),
+                    ));
+                }
+            }
+        }
+
+        let mut inserted_backends = Vec::new();
+        let mut stored_bytes = 0_u64;
+
+        for (index, store) in self.stores.iter().enumerate() {
+            match store.put_if_absent(key, entry) {
+                Ok(outcome) => {
+                    stored_bytes = stored_bytes.saturating_add(outcome.stored_bytes);
+                    if outcome.inserted {
+                        inserted_backends.push(index);
+                    }
+                }
+                Err(error) => {
+                    for inserted_index in inserted_backends {
+                        let _ = self.stores[inserted_index].remove(key);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(PutOutcome {
+            inserted: !inserted_backends.is_empty(),
+            stored_bytes,
+        })
+    }
+
+    fn remove(&self, key: &str) -> io::Result<()> {
+        let mut first_error = None;
+        for store in &self.stores {
+            if let Err(error) = store.remove(key) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn clear(&self) -> io::Result<()> {
+        let mut first_error = None;
+        for store in &self.stores {
+            if let Err(error) = store.clear() {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Default filesystem-backed persistent tier.
@@ -346,5 +588,64 @@ mod tests {
 
         store.clear().expect("clear");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn memory_store_round_trips() {
+        let store = VolatileStore::new();
+        let entry = StoredEntry {
+            value: b"memory".to_vec(),
+            expires_at: 0,
+            pinned: false,
+        };
+        assert!(store.put_if_absent("key", &entry).expect("put").inserted);
+        assert_eq!(store.get("key").expect("get"), Some(entry));
+        assert_eq!(store.len().expect("len"), 1);
+    }
+
+    #[test]
+    fn layered_store_replicates_and_reads_in_order() {
+        let fast = Arc::new(VolatileStore::new());
+        let durable = Arc::new(VolatileStore::new());
+        let store = LayeredStore::new(vec![fast.clone(), durable.clone()]).expect("layered");
+        let entry = StoredEntry {
+            value: b"replicated".to_vec(),
+            expires_at: 0,
+            pinned: true,
+        };
+
+        let outcome = store.put_if_absent("key", &entry).expect("put");
+        assert!(outcome.inserted);
+        assert_eq!(outcome.stored_bytes, (entry.value.len() * 2) as u64);
+        assert_eq!(fast.get("key").expect("fast"), Some(entry.clone()));
+        assert_eq!(durable.get("key").expect("durable"), Some(entry.clone()));
+        assert_eq!(store.get("key").expect("layered get"), Some(entry));
+
+        let snapshot = store.load_index().expect("index");
+        assert_eq!(snapshot.entries.len(), 1);
+        assert_eq!(snapshot.entries[0].stored_bytes, 20);
+    }
+
+    #[test]
+    fn layered_store_rejects_conflicting_existing_payloads() {
+        let first = Arc::new(VolatileStore::new());
+        let second = Arc::new(VolatileStore::new());
+        let store = LayeredStore::new(vec![first.clone(), second]).expect("layered");
+        let existing = StoredEntry {
+            value: b"old".to_vec(),
+            expires_at: 0,
+            pinned: false,
+        };
+        first.put_if_absent("key", &existing).expect("seed");
+
+        let conflicting = StoredEntry {
+            value: b"new".to_vec(),
+            expires_at: 0,
+            pinned: false,
+        };
+        let error = store
+            .put_if_absent("key", &conflicting)
+            .expect_err("must reject mismatch");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
