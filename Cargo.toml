@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["cache", "llm", "inference", "lru", "persistence"]
 categories = ["caching", "filesystem"]
 
+[lib]
+path = "src/lib_v09.rs"
+
 [features]
 default = []
 # NIXL is Linux-only upstream. The default RivetCache build keeps its existing
