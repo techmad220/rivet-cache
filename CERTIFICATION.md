@@ -10,7 +10,11 @@ Every release candidate must pass on Linux, Windows, and macOS:
 - `cargo test --all-targets`
 - `cargo clippy --all-targets -- -D warnings`
 
-The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, and TTL expiration.
+The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, TTL expiration, injected components, layered-store replication and conflict rejection, batch operations, and explicit invalidation.
+
+## Claim scope
+
+Public descriptions of RivetCache should state implemented and tested capabilities directly. Compatibility, interoperability, equivalence, or feature-comparison claims involving third-party products require separate documented evidence and are not implied by this certification.
 
 ## Production provenance
 

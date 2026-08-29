@@ -5,7 +5,10 @@ pub use policy::{
     CacheEvent, Clock, EvictionCandidate, EvictionPolicy, KeyStrategy, LruEviction, MetricsSink,
     NoopMetrics, Sha256KeyStrategy, SystemClock,
 };
-pub use store::{FileStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry};
+pub use store::{
+    FileStore, LayeredStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry,
+    VolatileStore,
+};
 
 use std::collections::HashMap;
 use std::io;
@@ -499,6 +502,73 @@ impl ContextCache {
         Ok(())
     }
 
+    /// Fetch multiple keys in input order.
+    ///
+    /// Each lookup preserves normal hit/miss, TTL, promotion-to-memory, and
+    /// telemetry semantics. The operation is not transactional.
+    pub fn get_many<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> io::Result<Vec<Option<Vec<u8>>>> {
+        keys.into_iter().map(|key| self.get(key)).collect()
+    }
+
+    /// Write multiple entries using the normal cache write path.
+    ///
+    /// All keys are validated before the first write. Backend I/O can still
+    /// fail after earlier entries have been committed, so this is intentionally
+    /// a batch convenience API rather than a transaction boundary.
+    pub fn put_many<'a>(
+        &self,
+        entries: impl IntoIterator<Item = (&'a str, &'a [u8], Option<Duration>, bool)>,
+    ) -> io::Result<()> {
+        let entries: Vec<_> = entries.into_iter().collect();
+        for (key, _, _, _) in &entries {
+            self.key_strategy.validate(key)?;
+        }
+        for (key, value, ttl, pinned) in entries {
+            self.put(key, value, ttl, pinned)?;
+        }
+        Ok(())
+    }
+
+    /// Explicitly invalidate one key from memory and the injected persistent
+    /// store. Missing keys are treated as already invalidated.
+    pub fn invalidate(&self, key: &str) -> io::Result<()> {
+        self.key_strategy.validate(key)?;
+
+        if let Some(store) = self.store.as_ref() {
+            store.remove(key)?;
+        }
+
+        let mut inner = self.lock_inner()?;
+        if let Some(record) = inner.memory.remove(key) {
+            inner.memory_bytes = inner.memory_bytes.saturating_sub(record.value.len() as u64);
+        }
+        if let Some(record) = inner.disk.remove(key) {
+            inner.disk_bytes = inner.disk_bytes.saturating_sub(record.stored_bytes);
+        }
+        drop(inner);
+
+        self.metrics.record(CacheEvent::Invalidation(1));
+        Ok(())
+    }
+
+    /// Explicitly invalidate several keys.
+    ///
+    /// All keys are validated before the first invalidation. Backend I/O can
+    /// still fail partway through the operation.
+    pub fn invalidate_many<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+        let keys: Vec<_> = keys.into_iter().collect();
+        for key in &keys {
+            self.key_strategy.validate(key)?;
+        }
+        for key in keys {
+            self.invalidate(key)?;
+        }
+        Ok(())
+    }
+
     pub fn clear(&self) -> io::Result<()> {
         if let Some(store) = self.store.as_ref() {
             store.clear()?;
@@ -929,5 +999,61 @@ mod tests {
         cache.put(&key, b"persisted", None, false).expect("put");
         assert_eq!(cache.get(&key).expect("get"), Some(b"persisted".to_vec()));
         assert_eq!(cache.stats().expect("stats").disk_hits, 1);
+    }
+
+    #[test]
+    fn batch_reads_writes_and_invalidation_use_normal_semantics() {
+        let cache = ContextCache::builder()
+            .memory_capacity(1024)
+            .persistent_capacity(1024)
+            .persistent_store(VolatileStore::new())
+            .build()
+            .expect("cache");
+        let first = cache.make_key("batch", "m", "one");
+        let second = cache.make_key("batch", "m", "two");
+
+        cache
+            .put_many([
+                (first.as_str(), b"one".as_slice(), None, false),
+                (second.as_str(), b"two".as_slice(), None, false),
+            ])
+            .expect("put many");
+        assert_eq!(
+            cache
+                .get_many([first.as_str(), second.as_str()])
+                .expect("get many"),
+            vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+        );
+
+        cache
+            .invalidate_many([first.as_str(), second.as_str()])
+            .expect("invalidate many");
+        assert_eq!(cache.get(&first).expect("first"), None);
+        assert_eq!(cache.get(&second).expect("second"), None);
+    }
+
+    #[test]
+    fn layered_store_can_back_a_context_cache() {
+        let fast = Arc::new(VolatileStore::new());
+        let durable = Arc::new(VolatileStore::new());
+        let layered = LayeredStore::new(vec![fast.clone(), durable.clone()]).expect("layered");
+        let cache = ContextCache::builder()
+            .persistent_capacity(4096)
+            .persistent_store(layered)
+            .build()
+            .expect("cache");
+        let key = cache.make_key("tier", "m", "artifact");
+
+        cache.put(&key, b"value", None, false).expect("put");
+        assert_eq!(
+            fast.get(&key).expect("fast"),
+            Some(StoredEntry {
+                value: b"value".to_vec(),
+                expires_at: 0,
+                pinned: false,
+            })
+        );
+        assert!(durable.get(&key).expect("durable").is_some());
+        assert_eq!(cache.get(&key).expect("get"), Some(b"value".to_vec()));
     }
 }

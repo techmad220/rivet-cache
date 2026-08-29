@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0 - 2026-08-28
+
+- Added `VolatileStore` as a volatile reference/backend implementation.
+- Added `LayeredStore` for ordered reads and replicated writes across injected stores.
+- Added fail-closed checks for conflicting existing replicas.
+- Added `get_many`, `put_many`, `invalidate`, and `invalidate_many`.
+- Added explicit invalidation telemetry.
+- Preserved the RivetCache v1 key and filesystem ABIs.
+- Kept the core synchronous and runtime-neutral; no async runtime or external service is required.
+
 ## 0.2.0 - 2026-08-28
 
 - Refactored the cache core to dependency-injected Rust traits.
