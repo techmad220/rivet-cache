@@ -58,10 +58,10 @@ impl AsyncKvError {
 }
 
 impl From<io::Error> for AsyncKvError {
-    fn from(error: io::Error) -> Self {
+    fn from(value: io::Error) -> Self {
         Self {
-            kind: error.kind(),
-            message: error.to_string(),
+            kind: value.kind(),
+            message: value.to_string(),
         }
     }
 }
@@ -100,28 +100,18 @@ pub struct AsyncKvPipelineStats {
 #[derive(Debug, Clone)]
 struct MoveRequest {
     key: KvBlockKey,
-    source_index: usize,
-    destination_index: usize,
+    source: usize,
+    destination: usize,
     remove_source: bool,
 }
 
-enum JobPayload {
-    Store {
-        blocks: Vec<KvBlock>,
-        ttl: Option<Duration>,
-        pinned: bool,
-    },
+enum Payload {
+    Store(Vec<KvBlock>, Option<Duration>, bool),
     Retrieve(Vec<KvBlockKey>),
     Move(Vec<MoveRequest>),
-    Prefetch {
-        keys: Vec<KvBlockKey>,
-        destination_index: usize,
-    },
+    Prefetch(Vec<KvBlockKey>, usize),
     Invalidate(Vec<KvBlockKey>),
-    Pin {
-        keys: Vec<KvBlockKey>,
-        pinned: bool,
-    },
+    Pin(Vec<KvBlockKey>, bool),
     Clear,
     Health,
 }
@@ -129,10 +119,10 @@ enum JobPayload {
 struct Job {
     id: u64,
     operation: AsyncKvOperation,
-    payload: JobPayload,
+    payload: Payload,
 }
 
-struct PipelineState {
+struct State {
     jobs: Mutex<BTreeMap<u64, AsyncKvJobSnapshot>>,
     wait_lock: Mutex<()>,
     changed: Condvar,
@@ -143,7 +133,7 @@ struct PipelineState {
     inflight: AtomicU64,
 }
 
-impl PipelineState {
+impl State {
     fn new() -> Self {
         Self {
             jobs: Mutex::new(BTreeMap::new()),
@@ -157,7 +147,7 @@ impl PipelineState {
         }
     }
 
-    fn set_running(&self, id: u64) {
+    fn mark_running(&self, id: u64) {
         if let Ok(mut jobs) = self.jobs.lock() {
             if let Some(job) = jobs.get_mut(&id) {
                 job.state = AsyncKvJobState::Running;
@@ -166,7 +156,7 @@ impl PipelineState {
         self.changed.notify_all();
     }
 
-    fn finish(
+    fn mark_finished(
         &self,
         id: u64,
         operation: AsyncKvOperation,
@@ -204,20 +194,18 @@ impl PipelineState {
         } else {
             self.failed.fetch_add(1, Ordering::Relaxed);
         }
-
-        // submit() reserves the inflight slot before the job can become visible to a worker.
         self.inflight.fetch_sub(1, Ordering::AcqRel);
         self.changed.notify_all();
     }
 }
 
-struct PipelineInner {
+struct Inner {
     sender: Mutex<Option<mpsc::SyncSender<Job>>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
-    state: Arc<PipelineState>,
+    state: Arc<State>,
 }
 
-impl Drop for PipelineInner {
+impl Drop for Inner {
     fn drop(&mut self) {
         match self.sender.get_mut() {
             Ok(sender) => {
@@ -239,7 +227,7 @@ impl Drop for PipelineInner {
 
 #[derive(Clone)]
 pub struct AsyncKvPipeline {
-    inner: Arc<PipelineInner>,
+    inner: Arc<Inner>,
 }
 
 impl AsyncKvPipeline {
@@ -250,17 +238,12 @@ impl AsyncKvPipeline {
         events: Option<Arc<KvEventBus>>,
     ) -> io::Result<Self> {
         if worker_threads == 0 || queue_capacity == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "async KV pipeline requires non-zero workers and queue capacity",
-            ));
+            return invalid("async KV pipeline requires non-zero workers and queue capacity");
         }
-
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
         let receiver = Arc::new(Mutex::new(receiver));
-        let state = Arc::new(PipelineState::new());
+        let state = Arc::new(State::new());
         let mut workers = Vec::with_capacity(worker_threads);
-
         for index in 0..worker_threads {
             let engine = engine.clone();
             let receiver = Arc::clone(&receiver);
@@ -272,9 +255,8 @@ impl AsyncKvPipeline {
                     .spawn(move || worker_loop(engine, receiver, state, events))?,
             );
         }
-
         Ok(Self {
-            inner: Arc::new(PipelineInner {
+            inner: Arc::new(Inner {
                 sender: Mutex::new(Some(sender)),
                 workers: Mutex::new(workers),
                 state,
@@ -291,43 +273,31 @@ impl AsyncKvPipeline {
         if blocks.is_empty() {
             return invalid("async store requires at least one KV block");
         }
-        self.submit(
-            AsyncKvOperation::Store,
-            JobPayload::Store {
-                blocks,
-                ttl,
-                pinned,
-            },
-        )
+        self.submit(AsyncKvOperation::Store, Payload::Store(blocks, ttl, pinned))
     }
 
     pub fn submit_retrieve(&self, keys: Vec<KvBlockKey>) -> io::Result<u64> {
         if keys.is_empty() {
             return invalid("async retrieve requires at least one key");
         }
-        self.submit(AsyncKvOperation::Retrieve, JobPayload::Retrieve(keys))
+        self.submit(AsyncKvOperation::Retrieve, Payload::Retrieve(keys))
     }
 
     pub fn submit_move(
         &self,
         key: KvBlockKey,
-        source_index: usize,
-        destination_index: usize,
+        source: usize,
+        destination: usize,
         remove_source: bool,
     ) -> io::Result<u64> {
-        self.submit_move_many(
-            vec![key],
-            source_index,
-            destination_index,
-            remove_source,
-        )
+        self.submit_move_many(vec![key], source, destination, remove_source)
     }
 
     pub fn submit_move_many(
         &self,
         keys: Vec<KvBlockKey>,
-        source_index: usize,
-        destination_index: usize,
+        source: usize,
+        destination: usize,
         remove_source: bool,
     ) -> io::Result<u64> {
         if keys.is_empty() {
@@ -337,72 +307,64 @@ impl AsyncKvPipeline {
             .into_iter()
             .map(|key| MoveRequest {
                 key,
-                source_index,
-                destination_index,
+                source,
+                destination,
                 remove_source,
             })
             .collect();
-        self.submit(AsyncKvOperation::Move, JobPayload::Move(requests))
+        self.submit(AsyncKvOperation::Move, Payload::Move(requests))
     }
 
     pub fn submit_prefetch(
         &self,
         keys: Vec<KvBlockKey>,
-        destination_index: usize,
+        destination: usize,
     ) -> io::Result<u64> {
         if keys.is_empty() {
             return invalid("async prefetch requires at least one key");
         }
-        self.submit(
-            AsyncKvOperation::Prefetch,
-            JobPayload::Prefetch {
-                keys,
-                destination_index,
-            },
-        )
+        self.submit(AsyncKvOperation::Prefetch, Payload::Prefetch(keys, destination))
     }
 
     pub fn submit_invalidate(&self, keys: Vec<KvBlockKey>) -> io::Result<u64> {
         if keys.is_empty() {
             return invalid("async invalidation requires at least one key");
         }
-        self.submit(AsyncKvOperation::Invalidate, JobPayload::Invalidate(keys))
+        self.submit(AsyncKvOperation::Invalidate, Payload::Invalidate(keys))
     }
 
     pub fn submit_set_pinned(&self, keys: Vec<KvBlockKey>, pinned: bool) -> io::Result<u64> {
         if keys.is_empty() {
             return invalid("async pin operation requires at least one key");
         }
-        self.submit(
-            if pinned {
-                AsyncKvOperation::Pin
-            } else {
-                AsyncKvOperation::Unpin
-            },
-            JobPayload::Pin { keys, pinned },
-        )
+        let operation = if pinned {
+            AsyncKvOperation::Pin
+        } else {
+            AsyncKvOperation::Unpin
+        };
+        self.submit(operation, Payload::Pin(keys, pinned))
     }
 
     pub fn submit_clear(&self) -> io::Result<u64> {
-        self.submit(AsyncKvOperation::Clear, JobPayload::Clear)
+        self.submit(AsyncKvOperation::Clear, Payload::Clear)
     }
 
     pub fn submit_health(&self) -> io::Result<u64> {
-        self.submit(AsyncKvOperation::Health, JobPayload::Health)
+        self.submit(AsyncKvOperation::Health, Payload::Health)
     }
 
-    pub fn snapshot(&self, job_id: u64) -> io::Result<Option<AsyncKvJobSnapshot>> {
+    pub fn snapshot(&self, id: u64) -> io::Result<Option<AsyncKvJobSnapshot>> {
         Ok(self
             .inner
             .state
             .jobs
             .lock()
             .map_err(|_| io::Error::other("async KV job registry lock poisoned"))?
-            .get(&job_id)
+            .get(&id)
             .cloned())
     }
 
-    pub fn take(&self, job_id: u64) -> io::Result<Option<AsyncKvJobSnapshot>> {
+    pub fn take(&self, id: u64) -> io::Result<Option<AsyncKvJobSnapshot>> {
         let mut jobs = self
             .inner
             .state
@@ -410,32 +372,40 @@ impl AsyncKvPipeline {
             .lock()
             .map_err(|_| io::Error::other("async KV job registry lock poisoned"))?;
         let terminal = jobs
-            .get(&job_id)
-            .map(|job| matches!(job.state, AsyncKvJobState::Completed | AsyncKvJobState::Failed))
+            .get(&id)
+            .map(|job| {
+                matches!(
+                    job.state,
+                    AsyncKvJobState::Completed | AsyncKvJobState::Failed
+                )
+            })
             .unwrap_or(false);
         if terminal {
-            Ok(jobs.remove(&job_id))
+            Ok(jobs.remove(&id))
         } else {
-            Ok(jobs.get(&job_id).cloned())
+            Ok(jobs.get(&id).cloned())
         }
     }
 
-    pub fn wait(&self, job_id: u64, timeout: Duration) -> io::Result<AsyncKvJobSnapshot> {
+    pub fn wait(&self, id: u64, timeout: Duration) -> io::Result<AsyncKvJobSnapshot> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "async job timeout overflow"))?;
         loop {
-            let snapshot = self.snapshot(job_id)?.ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, format!("unknown async job {job_id}"))
+            let snapshot = self.snapshot(id)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("unknown async job {id}"))
             })?;
-            if matches!(snapshot.state, AsyncKvJobState::Completed | AsyncKvJobState::Failed) {
+            if matches!(
+                snapshot.state,
+                AsyncKvJobState::Completed | AsyncKvJobState::Failed
+            ) {
                 return Ok(snapshot);
             }
             let now = Instant::now();
             if now >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!("async job {job_id} did not finish before timeout"),
+                    format!("async job {id} did not finish before timeout"),
                 ));
             }
             let guard = self
@@ -464,7 +434,7 @@ impl AsyncKvPipeline {
             .wait_lock
             .lock()
             .map_err(|_| io::Error::other("async KV wait lock poisoned"))?;
-        let (_guard, wait) = self
+        let (_guard, timed) = self
             .inner
             .state
             .changed
@@ -472,7 +442,7 @@ impl AsyncKvPipeline {
                 self.inner.state.inflight.load(Ordering::Acquire) != 0
             })
             .map_err(|_| io::Error::other("async KV wait poisoned"))?;
-        Ok(!wait.timed_out() || self.inner.state.inflight.load(Ordering::Acquire) == 0)
+        Ok(!timed.timed_out() || self.inner.state.inflight.load(Ordering::Acquire) == 0)
     }
 
     pub fn stats(&self) -> AsyncKvPipelineStats {
@@ -484,7 +454,7 @@ impl AsyncKvPipeline {
         }
     }
 
-    fn submit(&self, operation: AsyncKvOperation, payload: JobPayload) -> io::Result<u64> {
+    fn submit(&self, operation: AsyncKvOperation, payload: Payload) -> io::Result<u64> {
         let id = self
             .inner
             .state
@@ -507,51 +477,40 @@ impl AsyncKvPipeline {
                 },
             );
 
-        // Reserve before enqueue. A worker can complete immediately after try_send succeeds,
-        // so reserving later creates an underflow race in the completion path.
         self.inner.state.inflight.fetch_add(1, Ordering::AcqRel);
-        let send_result = {
+        let send = {
             let sender = self
                 .inner
                 .sender
                 .lock()
                 .map_err(|_| io::Error::other("async KV sender lock poisoned"))?;
-            match sender.as_ref() {
-                Some(sender) => sender.try_send(Job {
-                    id,
-                    operation,
-                    payload,
-                }),
-                None => {
-                    self.inner.state.inflight.fetch_sub(1, Ordering::AcqRel);
-                    self.inner
-                        .state
-                        .jobs
-                        .lock()
-                        .map_err(|_| io::Error::other("async KV job registry lock poisoned"))?
-                        .remove(&id);
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "async KV pipeline is shut down",
-                    ));
-                }
-            }
+            let Some(sender) = sender.as_ref() else {
+                self.rollback(id)?;
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "async KV pipeline is shut down",
+                ));
+            };
+            sender.try_send(Job {
+                id,
+                operation,
+                payload,
+            })
         };
-
-        match send_result {
+        match send {
             Ok(()) => {
                 self.inner.state.submitted.fetch_add(1, Ordering::Relaxed);
                 Ok(id)
             }
             Err(mpsc::TrySendError::Full(_)) => {
-                self.rollback_submit(id)?;
+                self.rollback(id)?;
                 Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "async KV pipeline queue is full",
                 ))
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
-                self.rollback_submit(id)?;
+                self.rollback(id)?;
                 Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "async KV pipeline workers are unavailable",
@@ -560,7 +519,7 @@ impl AsyncKvPipeline {
         }
     }
 
-    fn rollback_submit(&self, id: u64) -> io::Result<()> {
+    fn rollback(&self, id: u64) -> io::Result<()> {
         self.inner.state.inflight.fetch_sub(1, Ordering::AcqRel);
         self.inner
             .state
@@ -576,7 +535,7 @@ impl AsyncKvPipeline {
 fn worker_loop(
     engine: KvEngine,
     receiver: Arc<Mutex<mpsc::Receiver<Job>>>,
-    state: Arc<PipelineState>,
+    state: Arc<State>,
     events: Option<Arc<KvEventBus>>,
 ) {
     loop {
@@ -590,33 +549,28 @@ fn worker_loop(
                 Err(_) => return,
             }
         };
-        state.set_running(job.id);
-
-        if let Some(events) = &events {
-            let _ = events.publish(
-                KvEvent::new(job.operation.event_kind(), KvEventStatus::Started).request_id(job.id),
-            );
-        }
+        state.mark_running(job.id);
+        emit(&events, job.id, job.operation, KvEventStatus::Started, 0, 0, None);
         let started = Instant::now();
-        let result = execute_job(&engine, job.id, job.operation, job.payload, started)
+        let result = execute(&engine, job.id, job.operation, job.payload, started)
             .map_err(AsyncKvError::from);
-        if let Some(events) = &events {
-            match &result {
-                Ok(result) => {
-                    let status = if result.found {
-                        KvEventStatus::Completed
-                    } else {
-                        KvEventStatus::Miss
-                    };
-                    let _ = events.publish(
-                        KvEvent::new(job.operation.event_kind(), status)
-                            .request_id(job.id)
-                            .counts(result.completed, result.bytes)
-                            .duration_micros(result.elapsed_micros),
-                    );
-                }
-                Err(error) => {
-                    let _ = events.publish(
+        match &result {
+            Ok(value) => emit(
+                &events,
+                job.id,
+                job.operation,
+                if value.found {
+                    KvEventStatus::Completed
+                } else {
+                    KvEventStatus::Miss
+                },
+                value.completed,
+                value.bytes,
+                Some(value.elapsed_micros),
+            ),
+            Err(error) => {
+                if let Some(bus) = &events {
+                    let _ = bus.publish(
                         KvEvent::new(job.operation.event_kind(), KvEventStatus::Error)
                             .request_id(job.id)
                             .duration_micros(elapsed_micros(started))
@@ -625,19 +579,39 @@ fn worker_loop(
                 }
             }
         }
-        state.finish(job.id, job.operation, result);
+        state.mark_finished(job.id, job.operation, result);
     }
 }
 
-fn execute_job(
-    engine: &KvEngine,
-    job_id: u64,
+fn emit(
+    events: &Option<Arc<KvEventBus>>,
+    id: u64,
     operation: AsyncKvOperation,
-    payload: JobPayload,
+    status: KvEventStatus,
+    blocks: u64,
+    bytes: u64,
+    elapsed: Option<u64>,
+) {
+    if let Some(bus) = events {
+        let mut event = KvEvent::new(operation.event_kind(), status)
+            .request_id(id)
+            .counts(blocks, bytes);
+        if let Some(elapsed) = elapsed {
+            event = event.duration_micros(elapsed);
+        }
+        let _ = bus.publish(event);
+    }
+}
+
+fn execute(
+    engine: &KvEngine,
+    id: u64,
+    operation: AsyncKvOperation,
+    payload: Payload,
     started: Instant,
 ) -> io::Result<AsyncKvResult> {
-    let mut result = AsyncKvResult {
-        job_id,
+    let mut out = AsyncKvResult {
+        job_id: id,
         operation,
         found: true,
         requested: 0,
@@ -648,103 +622,92 @@ fn execute_job(
         blocks: Vec::new(),
         health: Vec::new(),
     };
-
     match payload {
-        JobPayload::Store {
-            blocks,
-            ttl,
-            pinned,
-        } => {
-            result.requested = blocks.len() as u64;
+        Payload::Store(blocks, ttl, pinned) => {
+            out.requested = blocks.len() as u64;
             for block in blocks {
-                result.bytes = result.bytes.saturating_add(block.bytes.len() as u64);
+                out.bytes = out.bytes.saturating_add(block.bytes.len() as u64);
                 engine.put(block, ttl, pinned)?;
-                result.completed = result.completed.saturating_add(1);
+                out.completed += 1;
             }
         }
-        JobPayload::Retrieve(keys) => {
-            result.requested = keys.len() as u64;
+        Payload::Retrieve(keys) => {
+            out.requested = keys.len() as u64;
             for key in keys {
                 match engine.get(&key)? {
                     Some(block) => {
-                        result.bytes = result.bytes.saturating_add(block.bytes.len() as u64);
-                        result.completed = result.completed.saturating_add(1);
-                        result.blocks.push(block);
+                        out.bytes = out.bytes.saturating_add(block.bytes.len() as u64);
+                        out.blocks.push(block);
+                        out.completed += 1;
                     }
-                    None => result.missed = result.missed.saturating_add(1),
+                    None => out.missed += 1,
                 }
             }
-            result.found = result.completed > 0;
+            out.found = out.completed > 0;
         }
-        JobPayload::Move(requests) => {
-            result.requested = requests.len() as u64;
+        Payload::Move(requests) => {
+            out.requested = requests.len() as u64;
             for request in requests {
                 if engine.move_block(
                     &request.key,
-                    request.source_index,
-                    request.destination_index,
+                    request.source,
+                    request.destination,
                     request.remove_source,
                 )? {
-                    result.completed = result.completed.saturating_add(1);
+                    out.completed += 1;
                 } else {
-                    result.missed = result.missed.saturating_add(1);
+                    out.missed += 1;
                 }
             }
-            result.found = result.completed > 0;
+            out.found = out.completed > 0;
         }
-        JobPayload::Prefetch {
-            keys,
-            destination_index,
-        } => {
-            let report = engine.prefetch_to(keys, destination_index).wait()?;
-            result.requested = report.requested;
-            result.completed = report.populated;
-            result.missed = report.missed;
-            result.found = report.populated > 0;
+        Payload::Prefetch(keys, destination) => {
+            let report = engine.prefetch_to(keys, destination).wait()?;
+            out.requested = report.requested;
+            out.completed = report.populated;
+            out.missed = report.missed;
+            out.found = report.populated > 0;
         }
-        JobPayload::Invalidate(keys) => {
-            result.requested = keys.len() as u64;
+        Payload::Invalidate(keys) => {
+            out.requested = keys.len() as u64;
             for key in keys {
                 engine.invalidate(&key)?;
-                result.completed = result.completed.saturating_add(1);
+                out.completed += 1;
             }
         }
-        JobPayload::Pin { keys, pinned } => {
-            result.requested = keys.len() as u64;
+        Payload::Pin(keys, pinned) => {
+            out.requested = keys.len() as u64;
             for key in keys {
                 if engine.set_pinned(&key, pinned)? {
-                    result.completed = result.completed.saturating_add(1);
+                    out.completed += 1;
                 } else {
-                    result.missed = result.missed.saturating_add(1);
+                    out.missed += 1;
                 }
             }
-            result.found = result.completed > 0;
+            out.found = out.completed > 0;
         }
-        JobPayload::Clear => {
-            result.requested = 1;
+        Payload::Clear => {
+            out.requested = 1;
             engine.clear()?;
-            result.completed = 1;
+            out.completed = 1;
         }
-        JobPayload::Health => {
-            result.requested = 1;
-            result.health = engine.health();
-            result.found = result.health.iter().all(|health| health.healthy);
-            if result.found {
-                result.completed = 1;
+        Payload::Health => {
+            out.requested = 1;
+            out.health = engine.health();
+            out.found = out.health.iter().all(|tier| tier.healthy);
+            if out.found {
+                out.completed = 1;
             } else {
-                result.missed = 1;
+                out.missed = 1;
             }
         }
     }
-    result.elapsed_micros = elapsed_micros(started);
-    Ok(result)
+    out.elapsed_micros = elapsed_micros(started);
+    Ok(out)
 }
 
 fn elapsed_micros(started: Instant) -> u64 {
-    started
-        .elapsed()
-        .as_micros()
-        .min(u128::from(u64::MAX)) as u64
+    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn invalid<T>(message: &str) -> io::Result<T> {
@@ -758,59 +721,60 @@ mod tests {
     use std::collections::HashMap;
 
     #[derive(Default)]
-    struct MemoryTier {
-        values: Mutex<HashMap<String, KvTierEntry>>,
-    }
+    struct MemoryTier(Mutex<HashMap<String, KvTierEntry>>);
 
     impl KvTier for MemoryTier {
         fn name(&self) -> &str {
             "memory"
         }
+
         fn get(&self, key: &KvBlockKey) -> io::Result<Option<KvTierEntry>> {
-            Ok(self.values.lock().unwrap().get(&key.cache_key()).cloned())
+            Ok(self.0.lock().unwrap().get(&key.cache_key()).cloned())
         }
+
         fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
-            self.values
+            self.0
                 .lock()
                 .unwrap()
                 .insert(entry.block.key.cache_key(), entry.clone());
             Ok(())
         }
+
         fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
-            self.values.lock().unwrap().remove(&key.cache_key());
+            self.0.lock().unwrap().remove(&key.cache_key());
             Ok(())
         }
+
         fn clear(&self) -> io::Result<()> {
-            self.values.lock().unwrap().clear();
+            self.0.lock().unwrap().clear();
             Ok(())
         }
     }
 
-    fn block(byte: u8) -> KvBlock {
-        let tokens = [1, 2, 3, 4];
+    fn block(index: u32, value: u8) -> KvBlock {
         KvBlock::new(
             KvBlockKey::from_prefix(
                 "model",
-                &tokens,
+                &[1, 2, 3, 4],
                 KvBlockRange {
-                    block_index: byte as u32,
-                    token_start: 0,
+                    block_index: index,
+                    token_start: index * 4,
                     token_count: 4,
                     layer_start: 0,
                     layer_count: 8,
                     layout_version: 1,
                 },
             ),
-            vec![byte; 64],
+            vec![value; 64],
         )
         .unwrap()
     }
 
     #[test]
-    fn store_and_retrieve_are_waitable() {
+    fn store_retrieve_and_finish() {
         let engine = KvEngine::builder().tier(MemoryTier::default()).build().unwrap();
         let pipeline = AsyncKvPipeline::new(engine, 2, 8, None).unwrap();
-        let original = block(7);
+        let original = block(0, 7);
         let store = pipeline
             .submit_store(vec![original.clone()], None, false)
             .unwrap();
@@ -818,9 +782,9 @@ mod tests {
             pipeline.wait(store, Duration::from_secs(2)).unwrap().state,
             AsyncKvJobState::Completed
         );
-        let retrieve = pipeline.submit_retrieve(vec![original.key.clone()]).unwrap();
+        let get = pipeline.submit_retrieve(vec![original.key.clone()]).unwrap();
         let result = pipeline
-            .wait(retrieve, Duration::from_secs(2))
+            .wait(get, Duration::from_secs(2))
             .unwrap()
             .result
             .unwrap();
@@ -830,33 +794,24 @@ mod tests {
     }
 
     #[test]
-    fn batch_move_reports_misses_without_failing_job() {
-        let source: Arc<dyn KvTier> = Arc::new(MemoryTier::default());
-        let destination: Arc<dyn KvTier> = Arc::new(MemoryTier::default());
+    fn batch_move_reports_a_miss_without_failing() {
         let engine = KvEngine::builder()
-            .tier_arc(source)
-            .tier_arc(destination)
+            .tier(MemoryTier::default())
+            .tier(MemoryTier::default())
             .build()
             .unwrap();
         let pipeline = AsyncKvPipeline::new(engine.clone(), 1, 4, None).unwrap();
-        let present = block(1);
-        let missing = block(2);
+        let present = block(0, 1);
+        let missing = block(1, 2);
         engine.put_to(0, present.clone(), None, false).unwrap();
-        let id = pipeline
-            .submit_move_many(
-                vec![present.key.clone(), missing.key],
-                0,
-                1,
-                false,
-            )
+        let job = pipeline
+            .submit_move_many(vec![present.key.clone(), missing.key], 0, 1, false)
             .unwrap();
         let result = pipeline
-            .wait(id, Duration::from_secs(2))
+            .wait(job, Duration::from_secs(2))
             .unwrap()
             .result
             .unwrap();
-        assert_eq!(result.requested, 2);
-        assert_eq!(result.completed, 1);
-        assert_eq!(result.missed, 1);
+        assert_eq!((result.requested, result.completed, result.missed), (2, 1, 1));
     }
 }
