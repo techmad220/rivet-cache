@@ -1,0 +1,104 @@
+name: Temporary publish certified v0.8.0
+
+on:
+  push:
+    branches:
+      - feat/v0.8-external-interoperability
+    paths:
+      - '.github/workflows/temp-publish-v0.8.0.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: v0.8.0
+      RELEASE_TARGET: 227c4bdd7c68dc87c2da4e4387190c4904c4e580
+      CERTIFIED_PR_HEAD: b310cecb74dfdaea4985d06c6e1393b22f5b1929
+      NIXL_SOURCE_SHA: c0a1102b94d173049a5478c23e765ba37681e2ca
+      UCX_SOURCE_SHA: b6a9d47fccce849c28111f05a7fa8f1c930ff17d
+      RIFTGPU_SOURCE_SHA: a154537b50aea48fb32125e7460b693c4fe9569f
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact certified merge target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          git cat-file -e "${RELEASE_TARGET}^{commit}"
+          git cat-file -e "${CERTIFIED_PR_HEAD}^{commit}"
+          git merge-base --is-ancestor "$RELEASE_TARGET" origin/main
+          parents="$(git rev-list --parents -n 1 "$RELEASE_TARGET")"
+          printf '%s\n' "$parents" | grep -F "$CERTIFIED_PR_HEAD"
+          echo "RIVET_V08_RELEASE_TARGET=PASS target=$RELEASE_TARGET certified_head=$CERTIFIED_PR_HEAD"
+
+      - name: Refuse pre-existing v0.8.0 publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing tag ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing release ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Publish v0.8.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'EOF'
+          ## RivetCache v0.8.0
+
+          Certified external interoperability release.
+
+          - Certified PR head: `b310cecb74dfdaea4985d06c6e1393b22f5b1929`
+          - Merge commit / release target: `227c4bdd7c68dc87c2da4e4387190c4904c4e580`
+          - NIXL 1.4.0 exact source: `c0a1102b94d173049a5478c23e765ba37681e2ca`
+          - UCX 1.21.0 exact source: `b6a9d47fccce849c28111f05a7fa8f1c930ff17d` with multi-threading enabled
+          - Real NIXL/UCX registered-memory prefill→decode transfer: 8 MiB (`8388608` bytes), byte-verified PASS
+          - RX 6800 XT native HIP D2D: 64 MiB (`67108864` bytes), PASS
+          - RiftGPU exact source: `a154537b50aea48fb32125e7460b693c4fe9569f`
+          - Vulkan↔HIP external-memory stress: 32 cycles plus final 64 MiB zero-copy transfer, PASS
+          - Exact-head CI, Security Audit, Production Integration, NIXL Integration, and AMD Interoperability: PASS
+
+          This release preserves RivetCache's default dependency/runtime surface; NIXL remains opt-in.
+          EOF
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$RELEASE_TARGET" \
+            --title "$RELEASE_TAG" \
+            --notes-file release-notes.md
+
+      - name: Verify published tag and release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          test "$(jq -r '.draft' <<<"$release_json")" = "false"
+          test "$(jq -r '.prerelease' <<<"$release_json")" = "false"
+          test "$(jq -r '.tag_name' <<<"$release_json")" = "$RELEASE_TAG"
+
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          object_type="$(jq -r '.object.type' <<<"$ref_json")"
+          object_sha="$(jq -r '.object.sha' <<<"$ref_json")"
+          if [ "$object_type" = "tag" ]; then
+            tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
+            resolved_sha="$(jq -r '.object.sha' <<<"$tag_json")"
+          else
+            resolved_sha="$object_sha"
+          fi
+          test "$resolved_sha" = "$RELEASE_TARGET"
+
+          echo "RIVET_V08_TAG=PASS tag=$RELEASE_TAG target=$resolved_sha"
+          echo "RIVET_V08_RELEASE=PASS draft=false prerelease=false"
