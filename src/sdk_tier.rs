@@ -136,7 +136,10 @@ fn decode_entry(key: KvBlockKey, bytes: &[u8], max: usize) -> io::Result<KvTierE
     };
     cursor += 1;
     let payload_len = usize::try_from(read_u64(bytes, &mut cursor)?).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "native SDK payload length overflow")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native SDK payload length overflow",
+        )
     })?;
     let checksum = bytes
         .get(cursor..cursor + 32)
@@ -166,7 +169,10 @@ fn decode_entry(key: KvBlockKey, bytes: &[u8], max: usize) -> io::Result<KvTierE
 fn read_u64(bytes: &[u8], cursor: &mut usize) -> io::Result<u64> {
     let end = cursor.saturating_add(8);
     let raw = bytes.get(*cursor..end).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::UnexpectedEof, "native SDK frame is truncated")
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "native SDK frame is truncated",
+        )
     })?;
     *cursor = end;
     let mut value = [0_u8; 8];
@@ -207,7 +213,10 @@ mod tests {
             Ok(self.0.lock().unwrap().get(key).cloned())
         }
         fn put(&self, key: &str, value: &[u8]) -> io::Result<()> {
-            self.0.lock().unwrap().insert(key.to_owned(), value.to_vec());
+            self.0
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), value.to_vec());
             Ok(())
         }
         fn remove(&self, key: &str) -> io::Result<()> {
@@ -215,7 +224,10 @@ mod tests {
             Ok(())
         }
         fn clear_prefix(&self, prefix: &str) -> io::Result<()> {
-            self.0.lock().unwrap().retain(|key, _| !key.starts_with(prefix));
+            self.0
+                .lock()
+                .unwrap()
+                .retain(|key, _| !key.starts_with(prefix));
             Ok(())
         }
         fn health(&self) -> io::Result<()> {
