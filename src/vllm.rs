@@ -185,25 +185,23 @@ impl VllmKvApi for FfiVllmKvApi {
                 "vLLM restore payload exceeds configured limits",
             ));
         }
-        Self::check(
-            "write",
-            unsafe {
-                (self.ops.write)(
-                    self.ops.context,
-                    slice.token_start,
-                    slice.token_count,
-                    slice.layer_start,
-                    slice.layer_count,
-                    slice.layout_version,
-                    bytes.as_ptr(),
-                    bytes.len(),
-                )
-            },
-        )
+        Self::check("write", unsafe {
+            (self.ops.write)(
+                self.ops.context,
+                slice.token_start,
+                slice.token_count,
+                slice.layer_start,
+                slice.layer_count,
+                slice.layout_version,
+                bytes.as_ptr(),
+                bytes.len(),
+            )
+        })
     }
 
     fn recompute_ranges(&self, query_tokens: &[u32], ranges: &[TokenRange]) -> io::Result<()> {
-        if query_tokens.is_empty() || ranges.is_empty() || ranges.len() > self.max_recompute_ranges {
+        if query_tokens.is_empty() || ranges.is_empty() || ranges.len() > self.max_recompute_ranges
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "vLLM recomputation requires bounded non-empty tokens and ranges",
@@ -219,19 +217,16 @@ impl VllmKvApi for FfiVllmKvApi {
         }
         let starts = ranges.iter().map(|range| range.start).collect::<Vec<_>>();
         let lens = ranges.iter().map(|range| range.len).collect::<Vec<_>>();
-        Self::check(
-            "recompute",
-            unsafe {
-                (self.ops.recompute)(
-                    self.ops.context,
-                    query_tokens.as_ptr(),
-                    query_tokens.len(),
-                    starts.as_ptr(),
-                    lens.as_ptr(),
-                    ranges.len(),
-                )
-            },
-        )
+        Self::check("recompute", unsafe {
+            (self.ops.recompute)(
+                self.ops.context,
+                query_tokens.as_ptr(),
+                query_tokens.len(),
+                starts.as_ptr(),
+                lens.as_ptr(),
+                ranges.len(),
+            )
+        })
     }
 
     fn health(&self) -> io::Result<()> {
@@ -306,9 +301,14 @@ impl RelocatableRuntimeKvAdapter for VllmAdapter {
                 .key
                 .token_start
                 .checked_sub(source_start)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unordered KV blocks"))?;
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "unordered KV blocks")
+                })?;
             let token_start = target_token_start.checked_add(relative).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "relocated token range overflow")
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "relocated token range overflow",
+                )
             })?;
             self.api.write_slice(
                 VllmKvSlice {
@@ -349,9 +349,11 @@ fn validate_restore_blocks(blocks: &[KvBlock]) -> io::Result<()> {
                 "vLLM restore requires contiguous blocks with shared model/layer/layout identity",
             ));
         }
-        expected_start = expected_start.checked_add(block.key.token_count).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "vLLM token range overflow")
-        })?;
+        expected_start = expected_start
+            .checked_add(block.key.token_count)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "vLLM token range overflow")
+            })?;
     }
     Ok(())
 }
