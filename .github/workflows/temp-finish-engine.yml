@@ -22,6 +22,26 @@ jobs:
       - name: Apply production engine patch
         run: python tools/finish_engine.py
 
+      - name: Use precise volatile backend name
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          store = Path("src/store.rs")
+          store.write_text(store.read_text().replace("MemoryStore", "VolatileStore"))
+
+          lib = Path("src/lib.rs")
+          text = lib.read_text()
+          text = text.replace("FileStore, LayeredStore, MemoryStore, PersistentStore", "FileStore, LayeredStore, VolatileStore, PersistentStore", 1)
+          text = text.replace(".persistent_store(MemoryStore::new())", ".persistent_store(VolatileStore::new())")
+          text = text.replace("Arc::new(MemoryStore::new())", "Arc::new(VolatileStore::new())")
+          lib.write_text(text)
+
+          for name in ["README.md", "CHANGELOG.md", "docs/architecture.md"]:
+              path = Path(name)
+              path.write_text(path.read_text().replace("MemoryStore", "VolatileStore"))
+          PY
+
       - name: Normalize Rust formatting
         run: cargo fmt --all
 
