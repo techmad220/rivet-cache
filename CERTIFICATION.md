@@ -16,26 +16,30 @@ The test suite covers stable and isolated keys, memory LRU eviction, restart per
 
 RivetCache 0.6.0 includes an optional local/trusted-process bridge for llama-server slot save, restore, erase, and cache-presence operations. RivetCache preserves the slot-state file as opaque bytes; reusable runtime semantics still depend on the external runtime serializing every state component it requires.
 
-The integration was hardware-certified on August 28, 2026 against these exact inputs:
+The final reconciled implementation was hardware-certified on August 28, 2026 against these exact inputs:
 
-- RivetCache source: `45a32bd3e9ab6cabf552b7a3969c49dea9b0cd5f`
+- RivetCache source: `f9a66a45e43ed4191a630f423a78b8eee6a9a3c1`
+- certified Git tree: `aa84b44c0d35c7188fef9ec9dd1f155ceec889de`
 - llama.cpp checkpoint-preserving source: `06d9d0ff54b586514a59268e2c780abc08473daa`
 - accelerator: AMD Radeon RX 6800 XT
 - backend: Vulkan
 - model digest: `sha256:95580dbdaad579582ee898257116abc18d7f3625a00c16a15735d41444a09f5e`
-- hardware workflow run: `33226944517`
-- hardware job: `99032409542`
+- hardware workflow run: `33227532477`
+- hardware job: `99034037650`
 
 The certification disabled llama.cpp's separate RAM prompt cache and exercised a divergent-prefix control before and after persistent restoration. The observed receipt was:
 
-- cold request: `prompt_n=1280`, `cache_n=0`
-- live checkpoint reuse: `prompt_n=38`, `cache_n=1244`
-- persisted state: `555059324` bytes
-- persisted-state SHA-256: `c0360ada216e04f6ff14e62c4a1f5beb9bcc0b135c78b5a67d06bc0cf93256ff`
-- restored checkpoint reuse: `prompt_n=38`, `cache_n=1244`
-- live/restored deterministic output SHA-256: `706156e10c3e1c7e7f063dc1a496be57ce2667ff015b4a21d27773003cbe2558`
+- cold request: `prompt_n=1440`
+- live checkpoint reuse: `prompt_n=38`, `cache_n=1404`
+- persisted state: `565548924` bytes
+- persisted-state SHA-256: `10320ef777b04151e8302d56451b7669a93d23ee5553ba6da69f68e1e2f52a71`
+- restored checkpoint reuse: `prompt_n=38`, `cache_n=1404`
+- live/restored deterministic output SHA-256: `fc0d806d0382dfc42c75fea63a1e7e27097c691826f6ab56100198757a6e64eb`
+- production llama-server restoration after the certification: PASS
 
 The restored request therefore reproduced the live checkpoint rollback exactly for prompt work, cached-token count, and deterministic output on the certified configuration. The exact tested llama.cpp source is recorded because this certification does not imply that every llama.cpp build persists the checkpoint state required by hybrid/recurrent models.
+
+The protected merge commit `791f306fb5bb6fd9db35a0c9d1ee8bc50b01d1da` preserved certified tree `aa84b44c0d35c7188fef9ec9dd1f155ceec889de` exactly. Later documentation-only receipt corrections do not alter the v0.6 runtime implementation; release packaging and exact release-head gates are recorded separately by the release workflow.
 
 ## Claim scope
 
