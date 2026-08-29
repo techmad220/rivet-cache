@@ -9,7 +9,9 @@
 - Added bounded state and HTTP response sizes, strict basename validation, regular-file checks, canonical root containment, symlink rejection, and atomic restore-file materialization.
 - Added deterministic unit coverage for cache round trips, the HTTP slot-action contract, chunked responses, and unsafe-path rejection.
 - Kept llama-server integration optional; the RivetCache core gains no mandatory inference-engine, GPU SDK, HTTP framework, or async-runtime dependency.
-- Hardware/runtime compatibility claims remain scoped to separately recorded exact-build certification.
+- Hardware-certified persistent checkpoint reuse on an AMD Radeon RX 6800 XT with Vulkan using exact RivetCache source `45a32bd3e9ab6cabf552b7a3969c49dea9b0cd5f` and exact checkpoint-preserving llama.cpp source `06d9d0ff54b586514a59268e2c780abc08473daa`.
+- The certified divergent-prefix test reduced prompt work from `1280` cold tokens to `38` tokens after restoration with `cache_n=1244`; the 555,059,324-byte persisted state and deterministic output both matched their live-control receipts exactly.
+- Runtime compatibility remains scoped to separately recorded exact-build certification; RivetCache does not infer reusable semantics from a successful byte restore alone.
 
 ## 0.5.0 - 2026-08-28
 
