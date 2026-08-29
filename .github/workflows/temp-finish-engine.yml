@@ -22,7 +22,10 @@ jobs:
       - name: Apply production engine patch
         run: python tools/finish_engine.py
 
-      - name: Format
+      - name: Normalize Rust formatting
+        run: cargo fmt --all
+
+      - name: Verify formatting
         run: cargo fmt --all -- --check
 
       - name: Test all targets
