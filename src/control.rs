@@ -72,7 +72,11 @@ impl QuotaManager {
             .lock()
             .map_err(|_| io::Error::other("quota manager lock poisoned"))?;
         if let Some(state) = tenants.get(&tenant) {
-            if state.usage.used_bytes.saturating_add(state.usage.reserved_bytes) > quota.max_bytes
+            if state
+                .usage
+                .used_bytes
+                .saturating_add(state.usage.reserved_bytes)
+                > quota.max_bytes
                 || state
                     .usage
                     .used_entries
@@ -103,7 +107,10 @@ impl QuotaManager {
             .lock()
             .map_err(|_| io::Error::other("quota manager lock poisoned"))?;
         let state = tenants.get_mut(tenant).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("tenant {tenant} has no quota"))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("tenant {tenant} has no quota"),
+            )
         })?;
         if state.usage.inflight >= state.quota.max_inflight {
             return Err(io::Error::new(
@@ -137,7 +144,10 @@ impl QuotaManager {
             .lock()
             .map_err(|_| io::Error::other("quota manager lock poisoned"))?;
         let state = tenants.get_mut(tenant).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("tenant {tenant} has no quota"))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("tenant {tenant} has no quota"),
+            )
         })?;
         let total_bytes = state
             .usage
@@ -150,10 +160,9 @@ impl QuotaManager {
             .saturating_add(state.usage.reserved_entries)
             .saturating_add(entries);
         if total_bytes > state.quota.max_bytes || total_entries > state.quota.max_entries {
-            return Err(io::Error::new(
-                io::ErrorKind::StorageFull,
-                format!("tenant {tenant} exceeded storage quota"),
-            ));
+            return Err(io::Error::other(format!(
+                "tenant {tenant} exceeded storage quota"
+            )));
         }
         state.usage.reserved_bytes = state.usage.reserved_bytes.saturating_add(bytes);
         state.usage.reserved_entries = state.usage.reserved_entries.saturating_add(entries);
@@ -173,7 +182,10 @@ impl QuotaManager {
             .lock()
             .map_err(|_| io::Error::other("quota manager lock poisoned"))?;
         let state = tenants.get_mut(tenant).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, format!("tenant {tenant} has no quota"))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("tenant {tenant} has no quota"),
+            )
         })?;
         state.usage.used_bytes = state.usage.used_bytes.saturating_sub(bytes);
         state.usage.used_entries = state.usage.used_entries.saturating_sub(entries);
@@ -249,7 +261,10 @@ impl StorageReservation {
             .lock()
             .map_err(|_| io::Error::other("quota manager lock poisoned"))?;
         let state = tenants.get_mut(&self.tenant).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "tenant disappeared during reservation")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "tenant disappeared during reservation",
+            )
         })?;
         state.usage.reserved_bytes = state.usage.reserved_bytes.saturating_sub(self.bytes);
         state.usage.reserved_entries = state.usage.reserved_entries.saturating_sub(self.entries);
@@ -266,7 +281,8 @@ impl StorageReservation {
         if let Ok(mut tenants) = self.inner.tenants.lock() {
             if let Some(state) = tenants.get_mut(&self.tenant) {
                 state.usage.reserved_bytes = state.usage.reserved_bytes.saturating_sub(self.bytes);
-                state.usage.reserved_entries = state.usage.reserved_entries.saturating_sub(self.entries);
+                state.usage.reserved_entries =
+                    state.usage.reserved_entries.saturating_sub(self.entries);
             }
         }
         self.state = ReservationState::Released;
@@ -310,7 +326,10 @@ impl FleetRegistry {
         let id = validate_id(id.into(), "node")?;
         let endpoint = endpoint.into();
         if endpoint.trim().is_empty() || capacity_bytes == 0 || used_bytes > capacity_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid fleet heartbeat"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid fleet heartbeat",
+            ));
         }
         let node = FleetNode {
             id: id.clone(),
@@ -467,7 +486,12 @@ fn handle_connection(mut stream: TcpStream, controller: &CacheController) -> io:
         }
         header_bytes = header_bytes.saturating_add(read);
         if header_bytes > 32 * 1024 {
-            return write_response(&mut stream, 431, "text/plain", b"request headers too large\n");
+            return write_response(
+                &mut stream,
+                431,
+                "text/plain",
+                b"request headers too large\n",
+            );
         }
         if line == "\r\n" {
             break;
@@ -481,7 +505,9 @@ fn handle_connection(mut stream: TcpStream, controller: &CacheController) -> io:
 
     let response = route_request(method, path, &params, controller);
     match response {
-        Ok((status, content_type, body)) => write_response(&mut stream, status, content_type, body.as_bytes()),
+        Ok((status, content_type, body)) => {
+            write_response(&mut stream, status, content_type, body.as_bytes())
+        }
         Err(error) => write_response(
             &mut stream,
             400,
@@ -501,9 +527,17 @@ fn route_request(
         ("GET", "/health") => Ok((200, "application/json", "{\"ok\":true}".to_owned())),
         ("GET", "/metrics") => {
             controller.refresh_metrics()?;
-            Ok((200, "text/plain; version=0.0.4", controller.metrics.render()?))
+            Ok((
+                200,
+                "text/plain; version=0.0.4",
+                controller.metrics.render()?,
+            ))
         }
-        ("GET", "/v1/nodes") => Ok((200, "application/json", nodes_json(&controller.fleet.nodes()?))),
+        ("GET", "/v1/nodes") => Ok((
+            200,
+            "application/json",
+            nodes_json(&controller.fleet.nodes()?),
+        )),
         ("GET", "/v1/tenants") => Ok((
             200,
             "application/json",
@@ -514,7 +548,12 @@ fn route_request(
                 "prefill" => WorkerRole::Prefill,
                 "decode" => WorkerRole::Decode,
                 "hybrid" => WorkerRole::Hybrid,
-                _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid worker role")),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "invalid worker role",
+                    ))
+                }
             };
             let node = controller.fleet.heartbeat(
                 required(params, "id")?,
@@ -535,13 +574,26 @@ fn route_request(
                     max_inflight: parse_u64(params, "max_inflight")?,
                 },
             )?;
-            Ok((200, "application/json", format!("{{\"tenant\":\"{}\",\"ok\":true}}", json_escape(&tenant))))
+            Ok((
+                200,
+                "application/json",
+                format!("{{\"tenant\":\"{}\",\"ok\":true}}", json_escape(&tenant)),
+            ))
         }
-        _ => Ok((404, "application/json", "{\"error\":\"not found\"}".to_owned())),
+        _ => Ok((
+            404,
+            "application/json",
+            "{\"error\":\"not found\"}".to_owned(),
+        )),
     }
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, content_type: &str, body: &[u8]) -> io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> io::Result<()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -585,7 +637,10 @@ fn percent_decode(value: &str) -> io::Result<String> {
         match bytes[index] {
             b'%' => {
                 if index + 2 >= bytes.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "truncated percent escape"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "truncated percent escape",
+                    ));
                 }
                 let high = hex_value(bytes[index + 1])?;
                 let low = hex_value(bytes[index + 2])?;
@@ -611,7 +666,10 @@ fn hex_value(byte: u8) -> io::Result<u8> {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid percent escape")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid percent escape",
+        )),
     }
 }
 
@@ -758,7 +816,11 @@ mod tests {
             .unwrap();
         let first = quotas.begin_request("tenant-a").unwrap();
         assert_eq!(
-            quotas.begin_request("tenant-a").unwrap_err().kind(),
+            quotas
+                .begin_request("tenant-a")
+                .err()
+                .expect("inflight quota error")
+                .kind(),
             io::ErrorKind::WouldBlock
         );
         drop(first);

@@ -162,7 +162,10 @@ impl GpuDirectIo for FfiGpuDirectIo {
             io::Error::new(io::ErrorKind::Unsupported, "device copy is not supported")
         })?;
         // SAFETY: callback validity and handle ownership are guaranteed by the binding contract.
-        status(unsafe { callback(self.ops.context, source.handle, destination.handle, bytes) }, "device copy")
+        status(
+            unsafe { callback(self.ops.context, source.handle, destination.handle, bytes) },
+            "device copy",
+        )
     }
 
     fn read_file(
@@ -174,7 +177,10 @@ impl GpuDirectIo for FfiGpuDirectIo {
     ) -> io::Result<()> {
         validate_range(destination, destination_offset, bytes)?;
         let callback = self.ops.read_file.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Unsupported, "GPU-direct file read is not supported")
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GPU-direct file read is not supported",
+            )
         })?;
         let path = path_to_cstring(path)?;
         // SAFETY: callback validity and destination handle are guaranteed by the binding contract.
@@ -201,7 +207,10 @@ impl GpuDirectIo for FfiGpuDirectIo {
     ) -> io::Result<()> {
         validate_range(source, source_offset, bytes)?;
         let callback = self.ops.write_file.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Unsupported, "GPU-direct file write is not supported")
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "GPU-direct file write is not supported",
+            )
         })?;
         let path = path_to_cstring(path)?;
         // SAFETY: callback validity and source handle are guaranteed by the binding contract.
@@ -240,11 +249,13 @@ fn validate_range(buffer: DeviceBuffer, offset: usize, bytes: usize) -> io::Resu
 
 fn path_to_cstring(path: &Path) -> io::Result<CString> {
     let path = path.to_str().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct path is not valid UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "GPU-direct path is not valid UTF-8",
+        )
     })?;
-    CString::new(path).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct path contains NUL")
-    })
+    CString::new(path)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "GPU-direct path contains NUL"))
 }
 
 fn status(code: i32, operation: &str) -> io::Result<()> {
@@ -321,8 +332,14 @@ mod tests {
             health: None,
         };
         let io = unsafe { FfiGpuDirectIo::rift_gpu(ops) }.unwrap();
-        let source = DeviceBuffer { handle: 1, len: 4096 };
-        let destination = DeviceBuffer { handle: 2, len: 4096 };
+        let source = DeviceBuffer {
+            handle: 1,
+            len: 4096,
+        };
+        let destination = DeviceBuffer {
+            handle: 2,
+            len: 4096,
+        };
         io.copy_device(source, destination, 2048).unwrap();
         io.read_file(Path::new("state.bin"), destination, 0, 1024)
             .unwrap();

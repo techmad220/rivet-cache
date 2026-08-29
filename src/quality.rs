@@ -75,7 +75,8 @@ pub fn plan_quality_reuse(
                 model_fingerprint,
                 &query_tokens[start..end],
                 policy.min_match_tokens,
-            )? else {
+            )?
+            else {
                 continue;
             };
             span.query_start = span.query_start.saturating_add(start);
@@ -109,9 +110,9 @@ pub fn plan_quality_reuse(
         return Ok(None);
     }
     spans.sort_by_key(|span| span.query_start);
-    let reused_tokens = spans
-        .iter()
-        .fold(0_usize, |total, span| total.saturating_add(span.matched_tokens));
+    let reused_tokens = spans.iter().fold(0_usize, |total, span| {
+        total.saturating_add(span.matched_tokens)
+    });
     let coverage = reused_tokens
         .saturating_mul(1000)
         .checked_div(query_tokens.len())
@@ -121,11 +122,8 @@ pub fn plan_quality_reuse(
         return Ok(None);
     }
 
-    let recompute_ranges = boundary_ranges(
-        &spans,
-        query_tokens.len(),
-        policy.boundary_recompute_tokens,
-    );
+    let recompute_ranges =
+        boundary_ranges(&spans, query_tokens.len(), policy.boundary_recompute_tokens);
     Ok(Some(QualityReusePlan {
         spans,
         recompute_ranges,
@@ -187,7 +185,9 @@ fn boundary_ranges(spans: &[ReuseSpan], query_len: usize, halo: usize) -> Vec<To
             .query_start
             .saturating_add(span.matched_tokens)
             .min(query_len);
-        let left_len = halo.min(span.matched_tokens).min(query_len.saturating_sub(span.query_start));
+        let left_len = halo
+            .min(span.matched_tokens)
+            .min(query_len.saturating_sub(span.query_start));
         if left_len > 0 {
             ranges.push(TokenRange {
                 start: span.query_start,
@@ -245,8 +245,12 @@ mod tests {
         let index = SegmentIndex::new();
         let source_a = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let source_b = vec![20, 21, 22, 23, 24, 25, 26, 27];
-        index.register("m", source_a.clone(), keys(&source_a, 2)).unwrap();
-        index.register("m", source_b.clone(), keys(&source_b, 2)).unwrap();
+        index
+            .register("m", source_a.clone(), keys(&source_a, 2))
+            .unwrap();
+        index
+            .register("m", source_b.clone(), keys(&source_b, 2))
+            .unwrap();
         let query = vec![90, 91, 3, 4, 5, 6, 99, 20, 21, 22, 23, 77];
         let plan = plan_quality_reuse(
             &index,
@@ -272,7 +276,9 @@ mod tests {
     fn coverage_guard_rejects_low_value_reuse() {
         let index = SegmentIndex::new();
         let source = vec![1, 2, 3, 4];
-        index.register("m", source.clone(), keys(&source, 2)).unwrap();
+        index
+            .register("m", source.clone(), keys(&source, 2))
+            .unwrap();
         let query = vec![0, 0, 1, 2, 3, 4, 0, 0, 0, 0, 0, 0];
         assert!(plan_quality_reuse(
             &index,

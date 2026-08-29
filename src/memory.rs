@@ -224,7 +224,10 @@ pub struct PinnedLease {
 
 impl PinnedLease {
     pub fn capacity(&self) -> usize {
-        self.region.as_ref().map(|region| region.capacity).unwrap_or(0)
+        self.region
+            .as_ref()
+            .map(|region| region.capacity)
+            .unwrap_or(0)
     }
 
     pub fn numa_node(&self) -> Option<u32> {
@@ -331,7 +334,10 @@ mod native {
 
     pub fn allocate(bytes: usize, numa_node: Option<u32>) -> io::Result<NonNull<u8>> {
         if bytes == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero allocation"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zero allocation",
+            ));
         }
         // SAFETY: calls documented Win32 allocation APIs with null desired address.
         let pointer = unsafe {
@@ -352,8 +358,7 @@ mod native {
                 ),
             }
         };
-        let pointer = NonNull::new(pointer.cast::<u8>())
-            .ok_or_else(io::Error::last_os_error)?;
+        let pointer = NonNull::new(pointer.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
         // SAFETY: pointer denotes a committed region of at least bytes bytes.
         if unsafe { VirtualLock(pointer.as_ptr().cast::<c_void>(), bytes) } == 0 {
             let error = io::Error::last_os_error();
@@ -418,7 +423,10 @@ mod native {
 
     pub fn allocate(bytes: usize, numa_node: Option<u32>) -> io::Result<NonNull<u8>> {
         if bytes == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero allocation"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zero allocation",
+            ));
         }
         #[cfg(not(all(
             target_os = "linux",
@@ -552,7 +560,10 @@ mod tests {
     fn unsupported_numa_fails_closed() {
         let pool = PinnedMemoryPool::with_allocator(4096, Arc::new(HeapPageAllocator));
         assert_eq!(
-            pool.acquire(1024, Some(0)).unwrap_err().kind(),
+            pool.acquire(1024, Some(0))
+                .err()
+                .expect("unsupported NUMA error")
+                .kind(),
             io::ErrorKind::Unsupported
         );
     }

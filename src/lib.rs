@@ -1,14 +1,41 @@
+mod codec;
+mod connectors;
+mod control;
 mod device;
+mod distributed;
+mod gpu_direct;
 mod kv;
 mod llama_cpp;
+mod memory;
+mod observability;
+mod plugins;
 mod policy;
+mod quality;
 mod remote;
 mod reuse;
 mod store;
 
+pub use codec::{CodecKvTier, CodecRegistry, IdentityCodec, PayloadCodec, RleCodec};
+pub use connectors::{
+    HttpClient, HttpRequest, HttpResponse, RedisAuth, RedisDialer, RedisKvTier, RedisStream,
+    S3Clock, S3Config, S3Credentials, S3KvTier, SystemS3Clock, TcpHttpClient, TcpRedisDialer,
+};
+pub use control::{
+    CacheController, ControllerServer, FleetNode, FleetRegistry, QuotaManager, RequestLease,
+    StorageReservation, TenantQuota, TenantSnapshot, TenantUsage,
+};
 pub use device::{
     DeviceAllocFn, DeviceBuffer, DeviceDownloadFn, DeviceFreeFn, DeviceHealthFn, DeviceKvTier,
     DeviceMemory, DeviceUploadFn, FfiDeviceMemory, FfiDeviceOps, HostDeviceMemory,
+};
+pub use distributed::{
+    DeviceTransferFn, DeviceTransferHealthFn, DeviceTransferProvider, DirectTransferRequest,
+    DisaggregatedKvRouter, FfiDeviceTransferOps, FfiDeviceTransferProvider, KvHandoffReport,
+    TransportCapabilities, TransportKind, WorkerRole,
+};
+pub use gpu_direct::{
+    FfiGpuDirectIo, FfiGpuDirectOps, GpuCopyFn, GpuDirectCapabilities, GpuDirectHealthFn,
+    GpuDirectIo, GpuFileReadFn, GpuFileWriteFn,
 };
 pub use kv::{
     ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
@@ -20,9 +47,22 @@ pub use llama_cpp::{
     FfiLlamaCppKvApi, LlamaCppAdapter, LlamaCppFfiOps, LlamaCppKvApi, LlamaHealthFn, LlamaKvSlice,
     LlamaReadKvFn, LlamaWriteKvFn, MockLlamaCppKvApi,
 };
+pub use memory::{
+    HeapPageAllocator, NativePinnedAllocator, PageAllocator, PinnedLease, PinnedMemoryPool,
+    PinnedPoolStats,
+};
+pub use observability::{InstrumentedKvTier, PrometheusRegistry};
+pub use plugins::{
+    CodecPluginFactory, KvTierPluginFactory, PluginComponent, PluginManifest, PluginRegistry,
+    TransportPluginFactory,
+};
 pub use policy::{
     CacheEvent, Clock, EvictionCandidate, EvictionPolicy, KeyStrategy, LruEviction, MetricsSink,
     NoopMetrics, Sha256KeyStrategy, SystemClock,
+};
+pub use quality::{
+    apply_quality_reuse, plan_quality_reuse, QualityAwareRuntimeKvAdapter, QualityReusePlan,
+    QualityReusePolicy, TokenRange,
 };
 pub use remote::{RemoteLimits, TcpKvServer, TcpKvTier};
 pub use reuse::{restore_reuse, RelocatableRuntimeKvAdapter, ReuseSpan, SegmentIndex};

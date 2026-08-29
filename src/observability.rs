@@ -17,21 +17,11 @@ struct MetricKey {
     labels: Vec<(String, String)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Histogram {
     buckets: [u64; 8],
     count: u64,
     sum_micros: u64,
-}
-
-impl Default for Histogram {
-    fn default() -> Self {
-        Self {
-            buckets: [0; 8],
-            count: 0,
-            sum_micros: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,12 +41,7 @@ impl PrometheusRegistry {
         Self::default()
     }
 
-    pub fn inc_counter(
-        &self,
-        name: &str,
-        labels: &[(&str, &str)],
-        delta: u64,
-    ) -> io::Result<()> {
+    pub fn inc_counter(&self, name: &str, labels: &[(&str, &str)], delta: u64) -> io::Result<()> {
         let key = metric_key(name, labels)?;
         let mut metrics = self
             .metrics
@@ -110,9 +95,10 @@ impl PrometheusRegistry {
             .metrics
             .lock()
             .map_err(|_| io::Error::other("metrics registry lock poisoned"))?;
-        let entry = metrics
-            .entry(key)
-            .or_insert((MetricKind::Histogram, MetricState::Histogram(Histogram::default())));
+        let entry = metrics.entry(key).or_insert((
+            MetricKind::Histogram,
+            MetricState::Histogram(Histogram::default()),
+        ));
         match &mut entry.1 {
             MetricState::Histogram(histogram) => {
                 histogram.count = histogram.count.saturating_add(1);
@@ -133,7 +119,9 @@ impl PrometheusRegistry {
     }
 
     pub fn render(&self) -> io::Result<String> {
-        const LIMITS: [&str; 7] = ["10", "100", "1000", "10000", "100000", "1000000", "10000000"];
+        const LIMITS: [&str; 7] = [
+            "10", "100", "1000", "10000", "100000", "1000000", "10000000",
+        ];
         let metrics = self
             .metrics
             .lock()
@@ -155,11 +143,19 @@ impl PrometheusRegistry {
                 emitted_type.insert(key.name.as_str(), *kind);
             }
             match state {
-                MetricState::Counter(value) => line(&mut output, &key.name, &key.labels, None, *value as i128),
-                MetricState::Gauge(value) => line(&mut output, &key.name, &key.labels, None, *value as i128),
+                MetricState::Counter(value) => {
+                    line(&mut output, &key.name, &key.labels, None, *value as i128)
+                }
+                MetricState::Gauge(value) => {
+                    line(&mut output, &key.name, &key.labels, None, *value as i128)
+                }
                 MetricState::Histogram(histogram) => {
                     for (index, count) in histogram.buckets.iter().enumerate() {
-                        let le = if index < LIMITS.len() { LIMITS[index] } else { "+Inf" };
+                        let le = if index < LIMITS.len() {
+                            LIMITS[index]
+                        } else {
+                            "+Inf"
+                        };
                         line(
                             &mut output,
                             &format!("{}_bucket", key.name),
@@ -203,9 +199,16 @@ impl InstrumentedKvTier {
     ) -> io::Result<Self> {
         let name = name.into();
         if name.trim().is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "tier name must not be empty"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tier name must not be empty",
+            ));
         }
-        Ok(Self { name, inner, metrics })
+        Ok(Self {
+            name,
+            inner,
+            metrics,
+        })
     }
 
     pub fn registry(&self) -> Arc<PrometheusRegistry> {
@@ -217,7 +220,11 @@ impl InstrumentedKvTier {
         let elapsed = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         let _ = self.metrics.inc_counter(
             "rivet_kv_tier_requests_total",
-            &[("tier", &self.name), ("operation", operation), ("status", status)],
+            &[
+                ("tier", &self.name),
+                ("operation", operation),
+                ("status", status),
+            ],
             1,
         );
         let _ = self.metrics.observe_micros(
@@ -295,9 +302,12 @@ fn validate_metric_name(name: &str) -> io::Result<()> {
     if name.is_empty()
         || !name
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' ))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':'))
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid Prometheus metric name"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Prometheus metric name",
+        ));
     }
     Ok(())
 }
@@ -308,7 +318,10 @@ fn validate_label_name(name: &str) -> io::Result<()> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid Prometheus label name"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Prometheus label name",
+        ));
     }
     Ok(())
 }
@@ -420,8 +433,12 @@ mod tests {
     #[test]
     fn renders_prometheus_histograms_and_labels() {
         let registry = PrometheusRegistry::new();
-        registry.inc_counter("rivet_requests_total", &[("tier", "hot")], 2).unwrap();
-        registry.observe_micros("rivet_latency_micros", &[("tier", "hot")], 125).unwrap();
+        registry
+            .inc_counter("rivet_requests_total", &[("tier", "hot")], 2)
+            .unwrap();
+        registry
+            .observe_micros("rivet_latency_micros", &[("tier", "hot")], 125)
+            .unwrap();
         let rendered = registry.render().unwrap();
         assert!(rendered.contains("# TYPE rivet_requests_total counter"));
         assert!(rendered.contains("rivet_requests_total{tier=\"hot\"} 2"));

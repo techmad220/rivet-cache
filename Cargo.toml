@@ -10,9 +10,6 @@ readme = "README.md"
 keywords = ["cache", "llm", "inference", "lru", "persistence"]
 categories = ["caching", "filesystem"]
 
-[lib]
-path = "src/lib_v07.rs"
-
 [dependencies]
 hex = "0.4"
 sha2 = "0.10"

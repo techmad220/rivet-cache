@@ -143,7 +143,10 @@ impl DeviceTransferProvider for FfiDeviceTransferProvider {
             return Ok(());
         };
         // SAFETY: callback validity/thread-safety is guaranteed by the constructor contract.
-        status_to_result(unsafe { health(self.ops.context) }, "device transfer health")
+        status_to_result(
+            unsafe { health(self.ops.context) },
+            "device transfer health",
+        )
     }
 }
 
@@ -224,9 +227,7 @@ impl DisaggregatedKvRouter {
             match self.decode_source.get(key)? {
                 Some(entry) => {
                     report.transferred = report.transferred.saturating_add(1);
-                    report.bytes = report
-                        .bytes
-                        .saturating_add(entry.block.bytes.len() as u64);
+                    report.bytes = report.bytes.saturating_add(entry.block.bytes.len() as u64);
                     blocks.push(entry.block);
                 }
                 None => report.missed = report.missed.saturating_add(1),

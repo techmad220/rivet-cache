@@ -52,7 +52,8 @@ impl PayloadCodec for RleCodec {
         while index < input.len() {
             let byte = input[index];
             let mut run = 1_usize;
-            while index + run < input.len() && input[index + run] == byte && run < u8::MAX as usize {
+            while index + run < input.len() && input[index + run] == byte && run < u8::MAX as usize
+            {
                 run += 1;
             }
             encoded.push(run as u8);
@@ -203,7 +204,10 @@ impl KvTier for CodecKvTier {
 
     fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
         let codec = self.registry.get(&self.write_codec)?.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "configured write codec disappeared")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "configured write codec disappeared",
+            )
         })?;
         let framed = encode_frame(codec.as_ref(), &entry.block.bytes)?;
         let encoded_entry = KvTierEntry {
@@ -236,7 +240,10 @@ fn encode_frame(codec: &dyn PayloadCodec, input: &[u8]) -> io::Result<Vec<u8>> {
     }
     validate_name(codec.name())?;
     if codec.name().len() > u16::MAX as usize {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "codec name is too long"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "codec name is too long",
+        ));
     }
     let encoded = codec.encode(input)?;
     let digest: [u8; 32] = Sha256::digest(input).into();
@@ -256,32 +263,53 @@ fn decode_frame(
     max_decoded_bytes: usize,
 ) -> io::Result<Vec<u8>> {
     if frame.len() < FRAME_MAGIC.len() + 2 + 8 + 32 || &frame[..FRAME_MAGIC.len()] != FRAME_MAGIC {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid codec frame"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid codec frame",
+        ));
     }
     let mut cursor = FRAME_MAGIC.len();
     let name_len = read_u16(frame, &mut cursor)? as usize;
     if name_len == 0 || frame.len().saturating_sub(cursor) < name_len + 8 + 32 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid codec name length"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid codec name length",
+        ));
     }
     let name = std::str::from_utf8(&frame[cursor..cursor + name_len])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "codec name is not UTF-8"))?;
     cursor += name_len;
     let expected_len_u64 = read_u64(frame, &mut cursor)?;
     let expected_len = usize::try_from(expected_len_u64).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "decoded payload length exceeds usize")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "decoded payload length exceeds usize",
+        )
     })?;
-    if expected_len == 0 || expected_len > max_decoded_bytes || frame.len().saturating_sub(cursor) < 32 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "decoded payload exceeds configured limit"));
+    if expected_len == 0
+        || expected_len > max_decoded_bytes
+        || frame.len().saturating_sub(cursor) < 32
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "decoded payload exceeds configured limit",
+        ));
     }
     let expected_digest = &frame[cursor..cursor + 32];
     cursor += 32;
     let codec = registry.get(name)?.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Unsupported, format!("codec {name} is not registered"))
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("codec {name} is not registered"),
+        )
     })?;
     let decoded = codec.decode(&frame[cursor..], expected_len, max_decoded_bytes)?;
     let actual_digest: [u8; 32] = Sha256::digest(&decoded).into();
     if actual_digest.as_slice() != expected_digest {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "decoded payload checksum mismatch"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "decoded payload checksum mismatch",
+        ));
     }
     Ok(decoded)
 }
@@ -379,8 +407,8 @@ mod tests {
     fn rle_round_trip_and_checksum() {
         let registry = Arc::new(CodecRegistry::with_builtins().unwrap());
         let inner: Arc<dyn KvTier> = Arc::new(MemoryTier::default());
-        let tier = CodecKvTier::new("compressed", Arc::clone(&inner), registry, "rle-v1", 1024)
-            .unwrap();
+        let tier =
+            CodecKvTier::new("compressed", Arc::clone(&inner), registry, "rle-v1", 1024).unwrap();
         let original = KvTierEntry {
             block: KvBlock::new(key(), vec![7; 128]).unwrap(),
             expires_at: 123,

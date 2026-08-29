@@ -38,7 +38,11 @@ impl PluginManifest {
             let key = key.trim();
             let value = value.trim();
             validate_identifier(key, "manifest property")?;
-            if value.is_empty() || properties.insert(key.to_owned(), value.to_owned()).is_some() {
+            if value.is_empty()
+                || properties
+                    .insert(key.to_owned(), value.to_owned())
+                    .is_some()
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("plugin manifest has invalid/duplicate property {key}"),
@@ -46,7 +50,10 @@ impl PluginManifest {
             }
         }
         let name = properties.remove("name").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "plugin manifest is missing name")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "plugin manifest is missing name",
+            )
         })?;
         let component = match properties.remove("component").as_deref() {
             Some("tier") => PluginComponent::Tier,
@@ -60,7 +67,10 @@ impl PluginManifest {
             }
         };
         let kind = properties.remove("kind").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "plugin manifest is missing kind")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "plugin manifest is missing kind",
+            )
         })?;
         validate_identifier(&name, "plugin name")?;
         validate_identifier(&kind, "plugin kind")?;
@@ -301,9 +311,8 @@ mod tests {
 
     #[test]
     fn duplicate_manifest_keys_fail_closed() {
-        assert!(PluginManifest::parse(
-            "name=a\ncomponent=tier\nkind=null-tier\nkind=again\n"
-        )
-        .is_err());
+        assert!(
+            PluginManifest::parse("name=a\ncomponent=tier\nkind=null-tier\nkind=again\n").is_err()
+        );
     }
 }

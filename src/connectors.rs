@@ -1,9 +1,8 @@
 use crate::{KvBlock, KvBlockKey, KvTier, KvTierEntry};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const KV_ENVELOPE_MAGIC: &[u8; 6] = b"RKV01\n";
@@ -89,7 +88,9 @@ impl RedisKvTier {
             || address.trim().is_empty()
             || namespace.trim().is_empty()
             || max_value_bytes == 0
-            || namespace.bytes().any(|byte| byte.is_ascii_control() || byte == b' ')
+            || namespace
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte == b' ')
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -168,7 +169,9 @@ impl KvTier for RedisKvTier {
         let result = self.command(&[b"GET".to_vec(), self.redis_key(key)])?;
         match result {
             RespValue::Bulk(None) => Ok(None),
-            RespValue::Bulk(Some(bytes)) => decode_entry(key.clone(), &bytes, self.max_value_bytes).map(Some),
+            RespValue::Bulk(Some(bytes)) => {
+                decode_entry(key.clone(), &bytes, self.max_value_bytes).map(Some)
+            }
             other => Err(protocol_error(format!("GET returned {other:?}"))),
         }
     }
@@ -181,17 +184,13 @@ impl KvTier for RedisKvTier {
                 "Redis KV entry exceeds configured value limit",
             ));
         }
-        let result = self.command(&[
-            b"SET".to_vec(),
-            self.redis_key(&entry.block.key),
-            encoded,
-        ])?;
+        let result = self.command(&[b"SET".to_vec(), self.redis_key(&entry.block.key), encoded])?;
         expect_simple_ok(result, "SET")
     }
 
     fn remove(&self, key: &KvBlockKey) -> io::Result<()> {
         match self.command(&[b"DEL".to_vec(), self.redis_key(key)])? {
-            RespValue::Integer(_) => Ok(()),
+            RespValue::Integer(removed) if removed >= 0 => Ok(()),
             other => Err(protocol_error(format!("DEL returned {other:?}"))),
         }
     }
@@ -232,7 +231,7 @@ impl KvTier for RedisKvTier {
             }
             if delete.len() > 1 {
                 match self.command(&delete)? {
-                    RespValue::Integer(_) => {}
+                    RespValue::Integer(removed) if removed >= 0 => {}
                     other => return Err(protocol_error(format!("DEL batch returned {other:?}"))),
                 }
             }
@@ -264,7 +263,10 @@ enum RespValue {
 
 fn write_resp_command(stream: &mut dyn RedisStream, arguments: &[Vec<u8>]) -> io::Result<()> {
     if arguments.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty Redis command"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "empty Redis command",
+        ));
     }
     write!(stream, "*{}\r\n", arguments.len())?;
     for argument in arguments {
@@ -286,18 +288,26 @@ fn read_resp<R: BufRead>(reader: &mut R, max_bytes: usize, depth: usize) -> io::
         b'-' => Ok(RespValue::Error(read_resp_line(reader, 8192)?)),
         b':' => {
             let line = read_resp_line(reader, 64)?;
-            let value = line.parse::<i64>().map_err(|_| protocol_error("invalid RESP integer"))?;
+            let value = line
+                .parse::<i64>()
+                .map_err(|_| protocol_error("invalid RESP integer"))?;
             Ok(RespValue::Integer(value))
         }
         b'$' => {
             let line = read_resp_line(reader, 64)?;
-            let length = line.parse::<i64>().map_err(|_| protocol_error("invalid RESP bulk length"))?;
+            let length = line
+                .parse::<i64>()
+                .map_err(|_| protocol_error("invalid RESP bulk length"))?;
             if length == -1 {
                 return Ok(RespValue::Bulk(None));
             }
-            let length = usize::try_from(length).map_err(|_| protocol_error("negative RESP bulk length"))?;
+            let length =
+                usize::try_from(length).map_err(|_| protocol_error("negative RESP bulk length"))?;
             if length > max_bytes {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "RESP bulk value exceeds limit"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "RESP bulk value exceeds limit",
+                ));
             }
             let mut bytes = vec![0_u8; length];
             reader.read_exact(&mut bytes)?;
@@ -306,11 +316,14 @@ fn read_resp<R: BufRead>(reader: &mut R, max_bytes: usize, depth: usize) -> io::
         }
         b'*' => {
             let line = read_resp_line(reader, 64)?;
-            let count = line.parse::<i64>().map_err(|_| protocol_error("invalid RESP array length"))?;
+            let count = line
+                .parse::<i64>()
+                .map_err(|_| protocol_error("invalid RESP array length"))?;
             if count == -1 {
                 return Ok(RespValue::Array(None));
             }
-            let count = usize::try_from(count).map_err(|_| protocol_error("negative RESP array length"))?;
+            let count =
+                usize::try_from(count).map_err(|_| protocol_error("negative RESP array length"))?;
             if count > 4096 {
                 return Err(protocol_error("RESP array exceeds element limit"));
             }
@@ -350,7 +363,9 @@ fn expect_simple_ok(value: RespValue, operation: &str) -> io::Result<()> {
             io::ErrorKind::PermissionDenied,
             format!("Redis {operation} failed: {error}"),
         )),
-        other => Err(protocol_error(format!("Redis {operation} returned {other:?}"))),
+        other => Err(protocol_error(format!(
+            "Redis {operation} returned {other:?}"
+        ))),
     }
 }
 
@@ -409,10 +424,12 @@ impl HttpClient for TcpHttpClient {
         } else {
             format!("{}:80", request.authority)
         };
-        let socket = address
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "HTTP authority did not resolve"))?;
+        let socket = address.to_socket_addrs()?.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "HTTP authority did not resolve",
+            )
+        })?;
         let mut stream = TcpStream::connect_timeout(&socket, self.connect_timeout)?;
         stream.set_read_timeout(Some(self.io_timeout))?;
         stream.set_write_timeout(Some(self.io_timeout))?;
@@ -459,9 +476,15 @@ impl HttpClient for TcpHttpClient {
                 .ok_or_else(|| protocol_error("HTTP header is invalid"))?;
             let value = value.trim().to_owned();
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = Some(value.parse::<usize>().map_err(|_| protocol_error("bad content-length"))?);
+                content_length = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| protocol_error("bad content-length"))?,
+                );
             }
-            if name.eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked") {
+            if name.eq_ignore_ascii_case("transfer-encoding")
+                && value.to_ascii_lowercase().contains("chunked")
+            {
                 chunked = true;
             }
             headers.push((name.trim().to_owned(), value));
@@ -470,7 +493,10 @@ impl HttpClient for TcpHttpClient {
             read_chunked(&mut reader, self.max_response_bytes)?
         } else if let Some(length) = content_length {
             if length > self.max_response_bytes {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP response exceeds limit"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP response exceeds limit",
+                ));
             }
             let mut body = vec![0_u8; length];
             reader.read_exact(&mut body)?;
@@ -481,11 +507,18 @@ impl HttpClient for TcpHttpClient {
                 .take((self.max_response_bytes as u64).saturating_add(1))
                 .read_to_end(&mut body)?;
             if body.len() > self.max_response_bytes {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP response exceeds limit"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP response exceeds limit",
+                ));
             }
             body
         };
-        Ok(HttpResponse { status, headers, body })
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -556,7 +589,10 @@ impl S3KvTier {
             || credentials.access_key.is_empty()
             || credentials.secret_key.is_empty()
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid S3 tier configuration"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid S3 tier configuration",
+            ));
         }
         let endpoint = Endpoint::parse(&config.endpoint)?;
         Ok(Self {
@@ -575,7 +611,12 @@ impl S3KvTier {
             parts.push(self.endpoint.base_path.trim_matches('/').to_owned());
         }
         parts.push(percent_path_segment(&self.config.bucket));
-        for part in self.config.prefix.split('/').filter(|part| !part.is_empty()) {
+        for part in self
+            .config
+            .prefix
+            .split('/')
+            .filter(|part| !part.is_empty())
+        {
             parts.push(percent_path_segment(part));
         }
         parts.push(key.cache_key());
@@ -664,13 +705,19 @@ impl KvTier for S3KvTier {
     fn put(&self, entry: &KvTierEntry) -> io::Result<()> {
         let body = encode_entry(entry)?;
         if body.len() > self.config.max_value_bytes {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "S3 KV entry exceeds configured limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "S3 KV entry exceeds configured limit",
+            ));
         }
         let response = self.request("PUT", self.object_path(&entry.block.key), body)?;
         if matches!(response.status, 200 | 201 | 204) {
             Ok(())
         } else {
-            Err(io::Error::other(format!("S3 PUT returned HTTP {}", response.status)))
+            Err(io::Error::other(format!(
+                "S3 PUT returned HTTP {}",
+                response.status
+            )))
         }
     }
 
@@ -679,7 +726,10 @@ impl KvTier for S3KvTier {
         if matches!(response.status, 200 | 204 | 404) {
             Ok(())
         } else {
-            Err(io::Error::other(format!("S3 DELETE returned HTTP {}", response.status)))
+            Err(io::Error::other(format!(
+                "S3 DELETE returned HTTP {}",
+                response.status
+            )))
         }
     }
 
@@ -695,7 +745,10 @@ impl KvTier for S3KvTier {
         if matches!(response.status, 200 | 204) {
             Ok(())
         } else {
-            Err(io::Error::other(format!("S3 health returned HTTP {}", response.status)))
+            Err(io::Error::other(format!(
+                "S3 health returned HTTP {}",
+                response.status
+            )))
         }
     }
 }
@@ -710,14 +763,27 @@ struct Endpoint {
 impl Endpoint {
     fn parse(value: &str) -> io::Result<Self> {
         let (scheme, rest) = value.split_once("://").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "S3 endpoint must include scheme://")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "S3 endpoint must include scheme://",
+            )
         })?;
         if !matches!(scheme, "http" | "https") {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "unsupported S3 endpoint scheme"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported S3 endpoint scheme",
+            ));
         }
         let (authority, base_path) = rest.split_once('/').unwrap_or((rest, ""));
-        if authority.is_empty() || authority.bytes().any(|byte| byte.is_ascii_control() || byte == b' ') {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid S3 endpoint authority"));
+        if authority.is_empty()
+            || authority
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte == b' ')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid S3 endpoint authority",
+            ));
         }
         Ok(Self {
             scheme: scheme.to_owned(),
@@ -764,7 +830,10 @@ fn aws_timestamp(seconds: u64) -> io::Result<(String, String)> {
     let seconds_of_day = seconds % 86_400;
     let (year, month, day) = civil_from_days(days);
     if !(1970..=9999).contains(&year) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "S3 timestamp year is out of range"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "S3 timestamp year is out of range",
+        ));
     }
     let hour = seconds_of_day / 3600;
     let minute = (seconds_of_day % 3600) / 60;
@@ -804,7 +873,10 @@ fn percent_path_segment(value: &str) -> String {
 
 fn encode_entry(entry: &KvTierEntry) -> io::Result<Vec<u8>> {
     if entry.block.bytes.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "KV entry payload must not be empty"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "KV entry payload must not be empty",
+        ));
     }
     let mut encoded = Vec::with_capacity(KV_ENVELOPE_MAGIC.len() + 17 + entry.block.bytes.len());
     encoded.extend_from_slice(KV_ENVELOPE_MAGIC);
@@ -815,7 +887,11 @@ fn encode_entry(entry: &KvTierEntry) -> io::Result<Vec<u8>> {
     Ok(encoded)
 }
 
-fn decode_entry(key: KvBlockKey, encoded: &[u8], max_value_bytes: usize) -> io::Result<KvTierEntry> {
+fn decode_entry(
+    key: KvBlockKey,
+    encoded: &[u8],
+    max_value_bytes: usize,
+) -> io::Result<KvTierEntry> {
     if encoded.len() > max_value_bytes || encoded.len() < KV_ENVELOPE_MAGIC.len() + 17 {
         return Err(protocol_error("KV envelope size is invalid"));
     }
@@ -879,7 +955,10 @@ fn read_chunked<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Vec<u8>> {
             return Ok(body);
         }
         if body.len().saturating_add(size) > max {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "chunked HTTP body exceeds limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chunked HTTP body exceeds limit",
+            ));
         }
         let old = body.len();
         body.resize(old + size, 0);
@@ -896,6 +975,9 @@ fn read_chunked<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::KvBlockRange;
+    use std::collections::HashMap;
+    use std::io::Cursor;
+    use std::sync::Mutex;
 
     struct FixedClock;
 
@@ -913,26 +995,49 @@ mod tests {
 
     impl HttpClient for MockS3 {
         fn execute(&self, request: &HttpRequest) -> io::Result<HttpResponse> {
-            *self.saw_auth.lock().unwrap() = request
-                .headers
-                .iter()
-                .any(|(name, value)| name == "Authorization" && value.starts_with("AWS4-HMAC-SHA256"));
+            *self.saw_auth.lock().unwrap() = request.headers.iter().any(|(name, value)| {
+                name == "Authorization" && value.starts_with("AWS4-HMAC-SHA256")
+            });
             let mut objects = self.objects.lock().unwrap();
             let response = match request.method.as_str() {
                 "PUT" => {
                     objects.insert(request.path.clone(), request.body.clone());
-                    HttpResponse { status: 200, headers: vec![], body: vec![] }
+                    HttpResponse {
+                        status: 200,
+                        headers: vec![],
+                        body: vec![],
+                    }
                 }
                 "GET" => match objects.get(&request.path) {
-                    Some(body) => HttpResponse { status: 200, headers: vec![], body: body.clone() },
-                    None => HttpResponse { status: 404, headers: vec![], body: vec![] },
+                    Some(body) => HttpResponse {
+                        status: 200,
+                        headers: vec![],
+                        body: body.clone(),
+                    },
+                    None => HttpResponse {
+                        status: 404,
+                        headers: vec![],
+                        body: vec![],
+                    },
                 },
                 "DELETE" => {
                     objects.remove(&request.path);
-                    HttpResponse { status: 204, headers: vec![], body: vec![] }
+                    HttpResponse {
+                        status: 204,
+                        headers: vec![],
+                        body: vec![],
+                    }
                 }
-                "HEAD" => HttpResponse { status: 200, headers: vec![], body: vec![] },
-                _ => HttpResponse { status: 405, headers: vec![], body: vec![] },
+                "HEAD" => HttpResponse {
+                    status: 200,
+                    headers: vec![],
+                    body: vec![],
+                },
+                _ => HttpResponse {
+                    status: 405,
+                    headers: vec![],
+                    body: vec![],
+                },
             };
             Ok(response)
         }
@@ -958,7 +1063,9 @@ mod tests {
         let bytes = b"*2\r\n$1\r\n0\r\n*2\r\n$3\r\na:1\r\n$3\r\na:2\r\n";
         let mut reader = BufReader::new(Cursor::new(bytes.as_slice()));
         let response = read_resp(&mut reader, 1024, 0).unwrap();
-        let RespValue::Array(Some(values)) = response else { panic!("array") };
+        let RespValue::Array(Some(values)) = response else {
+            panic!("array")
+        };
         assert_eq!(values.len(), 2);
     }
 
