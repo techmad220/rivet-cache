@@ -1,3 +1,19 @@
 /target/
 Cargo.lock
 *.tmp
+
+# Local credentials and secret-bearing material
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+service-account.json
+service_account.json
