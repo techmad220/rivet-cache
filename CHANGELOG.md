@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 - 2026-08-28
+
+- Added runtime-neutral KV block identities scoped by model, token prefix, layer range, block range, and layout version.
+- Added `KvEngine` with ordered tiers, configurable read promotion, targeted movement, invalidation, and write-through policy.
+- Added background prefetch using the Rust standard library; no async runtime is required.
+- Added injected `KvTransport` and `KvAllocator` boundaries for host/device/network-specific implementations.
+- Added `ContextCacheTier` adapter so existing RivetCache instances can serve as KV tiers.
+- Added metadata-preserving KV envelopes so TTL and pin state survive tier movement.
+- Added `PrefixIndex` for deterministic longest-prefix lookup.
+- Added `RuntimeKvAdapter` and `KvCaptureRequest` contracts for runtime-specific capture/restore plugins.
+- Added KV engine telemetry for hits, misses, writes, promotions, transfers, bytes moved, invalidations, expirations, and prefetches.
+- Added deterministic tests for key identity, prefix lookup, promotion, prefetch, movement, write-through, metadata preservation, and TTL.
+- Hardened write-through with best-effort rollback, expired-destination prefetch replacement, capture-range overflow checks, runtime adapter identity validation, and cross-model prefix-index validation.
+
 ## 0.3.0 - 2026-08-28
 
 - Added `VolatileStore` as a volatile reference/backend implementation.

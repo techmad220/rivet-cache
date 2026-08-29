@@ -1,10 +1,10 @@
 [package]
 name = "rivet-cache"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-description = "DI-first Rust cache with composable storage tiers, batch operations, invalidation, and telemetry."
+description = "DI-first Rust cache with composable storage tiers and runtime-neutral KV orchestration."
 repository = "https://github.com/techmad220/rivet-cache"
 readme = "README.md"
 keywords = ["cache", "llm", "inference", "lru", "persistence"]

@@ -10,7 +10,7 @@ Every release candidate must pass on Linux, Windows, and macOS:
 - `cargo test --all-targets`
 - `cargo clippy --all-targets -- -D warnings`
 
-The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, TTL expiration, injected components, layered-store replication and conflict rejection, batch operations, and explicit invalidation.
+The test suite covers stable and isolated keys, memory LRU eviction, restart persistence, corrupt-disk recovery, TTL expiration, injected components, layered-store replication and conflict rejection, batch operations, explicit invalidation, KV block identity, prefix lookup, tier promotion, targeted movement, background prefetch, write-through, metadata preservation, and KV TTL behavior.
 
 ## Claim scope
 
