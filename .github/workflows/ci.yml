@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 jobs:
   rust:
     strategy:
@@ -19,7 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ env.EXACT_SHA }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify exact revision
+        shell: bash
+        run: |
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXACT_SHA"
+          echo "EXACT_HEAD_SHA=$actual"
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: rustfmt, clippy
@@ -27,5 +38,30 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test all targets
         run: cargo test --all-targets
+      - name: Release tests
+        run: cargo test --all-targets --release
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Release build
+        run: cargo build --release
+      - name: Documentation warnings
+        shell: bash
+        run: RUSTDOCFLAGS='-D warnings' cargo doc --no-deps
+
+  exact-head-proof:
+    name: Exact-head / Release proof
+    needs: [rust]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.EXACT_SHA }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Seal certified revision
+        shell: bash
+        run: |
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$EXACT_SHA"
+          echo "RIVET_CACHE_EXACT_HEAD_RELEASE_CERT=PASS"
+          echo "sha=$actual"
