@@ -37,9 +37,6 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Package gate
-        run: cargo package --locked
-
       - name: Remove one-shot tooling
         run: |
           rm -f tools/finish_kv_layer.py
@@ -47,11 +44,19 @@ jobs:
           rm -f .github/workflows/temp-kv-runtime.yml
           rmdir tools 2>/dev/null || true
 
-      - name: Commit certified candidate
+      - name: Commit clean candidate locally
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet && exit 0
+          git diff --cached --quiet && exit 1
           git commit -m "feat: add runtime-neutral KV orchestration"
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
+      - name: Package exact clean candidate
+        run: |
+          test -z "$(git status --porcelain)"
+          cargo package --locked
+          test -z "$(git status --porcelain)"
+
+      - name: Push certified candidate
+        run: git push origin HEAD:${{ github.event.pull_request.head.ref }}
