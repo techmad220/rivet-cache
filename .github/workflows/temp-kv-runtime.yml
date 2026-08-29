@@ -22,6 +22,9 @@ jobs:
       - name: Apply KV layer metadata/docs patch
         run: python tools/finish_kv_layer.py
 
+      - name: Apply structural KV API fixes
+        run: python tools/fix_kv_api.py
+
       - name: Normalize formatting
         run: cargo fmt --all
 
@@ -40,6 +43,7 @@ jobs:
       - name: Remove one-shot tooling
         run: |
           rm -f tools/finish_kv_layer.py
+          rm -f tools/fix_kv_api.py
           rm -f .github/workflows/temp-kv-runtime.yml
           rmdir tools 2>/dev/null || true
 
