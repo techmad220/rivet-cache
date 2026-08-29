@@ -38,3 +38,12 @@ The default key domain remains `RIVET_CACHE_V1`. The bundled filesystem format r
 ## Scope
 
 Public claims describe implemented and tested RivetCache capabilities directly. Third-party compatibility, interoperability, equivalence, or comparative-performance claims require separate documented evidence.
+
+## v0.5 execution adapters
+
+The core cache remains runtime-neutral. Optional sibling modules supply execution-specific boundaries:
+
+- Remote service mode uses a versioned RivetCache TCP protocol with bounded messages and explicit health/clear operations. It is an application protocol, not an authenticated network perimeter.
+- Device storage owns opaque buffer handles through `DeviceMemory`. The FFI implementation delegates allocation/upload/download/free to caller-supplied callbacks and therefore can be bound to Vulkan, ROCm/HIP, CUDA, shared-memory, or other device systems without adding those SDKs to the core crate.
+- The llama.cpp adapter delegates KV extraction/injection to host callbacks defined by RivetCache. This avoids depending on unstable engine internals in the core library.
+- Non-prefix reuse is exact and block-aligned: `SegmentIndex` finds contiguous token subsequences and only returns complete registered KV blocks. Relocation is delegated to a runtime adapter. No approximate recomputation or quality-recovery algorithm is implied.

@@ -1,17 +1,31 @@
+mod device;
 mod kv;
+mod llama_cpp;
 mod policy;
+mod remote;
+mod reuse;
 mod store;
 
+pub use device::{
+    DeviceAllocFn, DeviceBuffer, DeviceDownloadFn, DeviceFreeFn, DeviceHealthFn, DeviceKvTier,
+    DeviceMemory, DeviceUploadFn, FfiDeviceMemory, FfiDeviceOps, HostDeviceMemory,
+};
 pub use kv::{
     ContextCacheTier, CopyTransport, KvAllocator, KvBlock, KvBlockKey, KvBlockRange,
     KvCaptureRequest, KvEngine, KvEngineBuilder, KvEngineStats, KvPrefetch, KvTier, KvTierEntry,
-    KvTransport, KvWritePolicy, PrefetchReport, PrefixIndex, PrefixMatch, RuntimeKvAdapter,
-    VecAllocator,
+    KvTierHealth, KvTransport, KvWritePolicy, PrefetchReport, PrefixIndex, PrefixMatch,
+    RuntimeKvAdapter, VecAllocator,
+};
+pub use llama_cpp::{
+    FfiLlamaCppKvApi, LlamaCppAdapter, LlamaCppFfiOps, LlamaCppKvApi, LlamaHealthFn, LlamaKvSlice,
+    LlamaReadKvFn, LlamaWriteKvFn, MockLlamaCppKvApi,
 };
 pub use policy::{
     CacheEvent, Clock, EvictionCandidate, EvictionPolicy, KeyStrategy, LruEviction, MetricsSink,
     NoopMetrics, Sha256KeyStrategy, SystemClock,
 };
+pub use remote::{RemoteLimits, TcpKvServer, TcpKvTier};
+pub use reuse::{restore_reuse, RelocatableRuntimeKvAdapter, ReuseSpan, SegmentIndex};
 pub use store::{
     FileStore, LayeredStore, PersistentStore, PutOutcome, StoreRecord, StoreSnapshot, StoredEntry,
     VolatileStore,
