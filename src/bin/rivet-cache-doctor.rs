@@ -31,6 +31,20 @@ struct ProbeResult {
     detail: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonStatus {
+    tier: String,
+    version: String,
+    memory_capacity_bytes: u64,
+    persistent_capacity_bytes: u64,
+}
+
+#[derive(Debug)]
+struct ControlProbeResult {
+    probe: ProbeResult,
+    daemon: Option<DaemonStatus>,
+}
+
 fn main() -> ExitCode {
     let config = match parse_args(env::args().skip(1)) {
         Ok(config) => config,
@@ -42,18 +56,24 @@ fn main() -> ExitCode {
 
     let data = probe_data(&config.data_endpoint);
     let control = probe_control(&config.control_endpoint);
-    let healthy = data.ok && control.ok;
+    let healthy = data.ok && control.probe.ok;
 
     if config.json {
+        let daemon_json = control
+            .daemon
+            .as_ref()
+            .map(daemon_status_json)
+            .unwrap_or_else(|| "null".to_owned());
         println!(
-            "{{\"ok\":{},\"data\":{{\"endpoint\":\"{}\",\"ok\":{},\"detail\":\"{}\"}},\"control\":{{\"endpoint\":\"{}\",\"ok\":{},\"detail\":\"{}\"}}}}",
+            "{{\"ok\":{},\"data\":{{\"endpoint\":\"{}\",\"ok\":{},\"detail\":\"{}\"}},\"control\":{{\"endpoint\":\"{}\",\"ok\":{},\"detail\":\"{}\"}},\"daemon\":{}}}",
             healthy,
             json_escape(&config.data_endpoint),
             data.ok,
             json_escape(&data.detail),
             json_escape(&config.control_endpoint),
-            control.ok,
-            json_escape(&control.detail),
+            control.probe.ok,
+            json_escape(&control.probe.detail),
+            daemon_json,
         );
     } else {
         println!(
@@ -68,10 +88,19 @@ fn main() -> ExitCode {
         );
         println!(
             "control {}  {}  {}",
-            if control.ok { "PASS" } else { "FAIL" },
+            if control.probe.ok { "PASS" } else { "FAIL" },
             config.control_endpoint,
-            control.detail
+            control.probe.detail
         );
+        if let Some(status) = &control.daemon {
+            println!(
+                "daemon  READY tier={} version={} memory={} MiB persistent={} MiB",
+                status.tier,
+                status.version,
+                status.memory_capacity_bytes / (1024 * 1024),
+                status.persistent_capacity_bytes / (1024 * 1024),
+            );
+        }
     }
 
     if healthy {
@@ -99,25 +128,163 @@ fn probe_data(endpoint: &str) -> ProbeResult {
     }
 }
 
-fn probe_control(endpoint: &str) -> ProbeResult {
-    let result = (|| -> io::Result<()> {
+fn probe_control(endpoint: &str) -> ControlProbeResult {
+    let result = (|| -> io::Result<DaemonStatus> {
         let health = http_get(endpoint, "/health")?;
         ensure_http_ok(&health, "/health")?;
         let metrics = http_get(endpoint, "/metrics")?;
         ensure_http_ok(&metrics, "/metrics")?;
-        Ok(())
+        inspect_daemon_metrics(http_body(&metrics)?)
     })();
 
     match result {
-        Ok(()) => ProbeResult {
-            ok: true,
-            detail: "health and metrics endpoints reachable".to_owned(),
+        Ok(daemon) => ControlProbeResult {
+            probe: ProbeResult {
+                ok: true,
+                detail: "health, metrics, and daemon readiness checks succeeded".to_owned(),
+            },
+            daemon: Some(daemon),
         },
-        Err(error) => ProbeResult {
-            ok: false,
-            detail: error.to_string(),
+        Err(error) => ControlProbeResult {
+            probe: ProbeResult {
+                ok: false,
+                detail: error.to_string(),
+            },
+            daemon: None,
         },
     }
+}
+
+fn inspect_daemon_metrics(metrics: &str) -> io::Result<DaemonStatus> {
+    let ready = metric_value(metrics, "rivet_daemon_ready", &[])?;
+    if ready != 1 {
+        return Err(io::Error::other(format!(
+            "daemon readiness metric is {ready}, expected 1"
+        )));
+    }
+
+    let memory_capacity_bytes = metric_value(
+        metrics,
+        "rivet_daemon_capacity_bytes",
+        &[("tier", "memory")],
+    )?;
+    let persistent_capacity_bytes = metric_value(
+        metrics,
+        "rivet_daemon_capacity_bytes",
+        &[("tier", "persistent")],
+    )?;
+
+    let (series, build_value) = metric_sample(metrics, "rivet_daemon_build_info", &[])?;
+    if build_value != 1 {
+        return Err(io::Error::other(format!(
+            "daemon build-info metric is {build_value}, expected 1"
+        )));
+    }
+    let tier = label_value(series, "tier").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon build-info metric is missing tier label",
+        )
+    })?;
+    let version = label_value(series, "version").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon build-info metric is missing version label",
+        )
+    })?;
+
+    Ok(DaemonStatus {
+        tier,
+        version,
+        memory_capacity_bytes,
+        persistent_capacity_bytes,
+    })
+}
+
+fn metric_value(metrics: &str, name: &str, labels: &[(&str, &str)]) -> io::Result<u64> {
+    metric_sample(metrics, name, labels).map(|(_, value)| value)
+}
+
+fn metric_sample<'a>(
+    metrics: &'a str,
+    name: &str,
+    labels: &[(&str, &str)],
+) -> io::Result<(&'a str, u64)> {
+    for line in metrics.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((series, value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let series_name = series
+            .split_once('{')
+            .map(|(value, _)| value)
+            .unwrap_or(series);
+        if series_name != name {
+            continue;
+        }
+        if !labels
+            .iter()
+            .all(|(key, expected)| label_value(series, key).as_deref() == Some(*expected))
+        {
+            continue;
+        }
+        let value = value.parse::<u64>().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("metric {name} has non-integer value {value:?}"),
+            )
+        })?;
+        return Ok((series, value));
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("required metric {name} not found"),
+    ))
+}
+
+fn label_value(series: &str, key: &str) -> Option<String> {
+    let (_, labels) = series.split_once('{')?;
+    let labels = labels.strip_suffix('}')?;
+    for pair in labels.split(',') {
+        let (name, raw) = pair.split_once('=')?;
+        if name != key {
+            continue;
+        }
+        let raw = raw.strip_prefix('"')?.strip_suffix('"')?;
+        return prometheus_unescape(raw);
+    }
+    None
+}
+
+fn prometheus_unescape(value: &str) -> Option<String> {
+    let mut output = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            output.push(character);
+            continue;
+        }
+        match chars.next()? {
+            '\\' => output.push('\\'),
+            '"' => output.push('"'),
+            'n' => output.push('\n'),
+            _ => return None,
+        }
+    }
+    Some(output)
+}
+
+fn daemon_status_json(status: &DaemonStatus) -> String {
+    format!(
+        "{{\"ready\":true,\"tier\":\"{}\",\"version\":\"{}\",\"memory_capacity_bytes\":{},\"persistent_capacity_bytes\":{}}}",
+        json_escape(&status.tier),
+        json_escape(&status.version),
+        status.memory_capacity_bytes,
+        status.persistent_capacity_bytes,
+    )
 }
 
 fn http_get(endpoint: &str, path: &str) -> io::Result<String> {
@@ -151,6 +318,18 @@ fn ensure_http_ok(response: &str, path: &str) -> io::Result<()> {
         let status = response.lines().next().unwrap_or("invalid HTTP response");
         Err(io::Error::other(format!("{path} returned {status}")))
     }
+}
+
+fn http_body(response: &str) -> io::Result<&str> {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP response is missing header/body separator",
+            )
+        })
 }
 
 fn resolve_one(endpoint: &str) -> io::Result<SocketAddr> {
@@ -248,6 +427,14 @@ fn print_usage() {
 mod tests {
     use super::*;
 
+    const METRICS: &str = "# TYPE rivet_daemon_build_info gauge\n\
+rivet_daemon_build_info{tier=\"daemon-cache\",version=\"0.8.0\"} 1\n\
+# TYPE rivet_daemon_capacity_bytes gauge\n\
+rivet_daemon_capacity_bytes{tier=\"memory\"} 536870912\n\
+rivet_daemon_capacity_bytes{tier=\"persistent\"} 8589934592\n\
+# TYPE rivet_daemon_ready gauge\n\
+rivet_daemon_ready 1\n";
+
     #[test]
     fn parses_endpoints_and_json_mode() -> io::Result<()> {
         let config = parse_args([
@@ -261,6 +448,31 @@ mod tests {
         assert_eq!(config.control_endpoint, "localhost:7002");
         assert!(config.json);
         Ok(())
+    }
+
+    #[test]
+    fn inspects_required_daemon_metrics() -> io::Result<()> {
+        let status = inspect_daemon_metrics(METRICS)?;
+        assert_eq!(status.tier, "daemon-cache");
+        assert_eq!(status.version, "0.8.0");
+        assert_eq!(status.memory_capacity_bytes, 536_870_912);
+        assert_eq!(status.persistent_capacity_bytes, 8_589_934_592);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_not_ready_daemon() {
+        let metrics = METRICS.replace("rivet_daemon_ready 1", "rivet_daemon_ready 0");
+        let error = inspect_daemon_metrics(&metrics).expect_err("not-ready daemon must fail");
+        assert!(error.to_string().contains("expected 1"));
+    }
+
+    #[test]
+    fn parses_escaped_prometheus_label() {
+        assert_eq!(
+            label_value("metric{value=\"a\\\\b\\\"c\\n\"}", "value").as_deref(),
+            Some("a\\b\"c\n")
+        );
     }
 
     #[test]
