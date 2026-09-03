@@ -1,6 +1,7 @@
 include!("lib.rs");
 
 mod async_runtime;
+mod daemon;
 mod events;
 mod mooncake;
 mod mp;
@@ -12,6 +13,7 @@ pub use async_runtime::{
     AsyncKvError, AsyncKvJobSnapshot, AsyncKvJobState, AsyncKvOperation, AsyncKvPipeline,
     AsyncKvPipelineStats, AsyncKvResult,
 };
+pub use daemon::{DaemonConfig, RivetDaemon};
 pub use events::{
     KvEvent, KvEventBus, KvEventKind, KvEventStatus, KvEventSubscriber, OtelEventExporter,
     OtelEventSubscriber, PrometheusEventSubscriber,
