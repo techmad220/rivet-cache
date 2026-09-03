@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const MIB: u64 = 1024 * 1024;
+const DAEMON_TIER: &str = "daemon-cache";
 
 /// Configuration for a managed RivetCache service process.
 ///
@@ -73,15 +74,17 @@ impl RivetDaemon {
         config.validate()?;
 
         let metrics = Arc::new(PrometheusRegistry::new());
+        register_daemon_metrics(&metrics, &config)?;
+
         let cache = Arc::new(ContextCache::new(
             Some(config.root),
             config.memory_capacity_bytes,
             config.persistent_capacity_bytes,
             Duration::ZERO,
         )?);
-        let cache_tier: Arc<dyn KvTier> = Arc::new(ContextCacheTier::new("daemon-cache", cache)?);
+        let cache_tier: Arc<dyn KvTier> = Arc::new(ContextCacheTier::new(DAEMON_TIER, cache)?);
         let tier: Arc<dyn KvTier> = Arc::new(InstrumentedKvTier::new(
-            "daemon-cache",
+            DAEMON_TIER,
             cache_tier,
             Arc::clone(&metrics),
         )?);
@@ -94,6 +97,11 @@ impl RivetDaemon {
         let controller = CacheController::new(Arc::clone(&metrics));
         let control_server = ControllerServer::spawn(&config.control_bind, controller)?;
         let control_addr = control_server.local_addr().to_owned();
+
+        // Readiness becomes true only after both listeners and shared telemetry
+        // exist. A failure to publish readiness tears the just-created service
+        // back down through the local server values' Drop implementations.
+        metrics.set_gauge("rivet_daemon_ready", &[], 1)?;
 
         Ok(Self {
             data_server: Some(data_server),
@@ -117,6 +125,7 @@ impl RivetDaemon {
     }
 
     pub fn stop(mut self) -> io::Result<()> {
+        let readiness_result = self.metrics.set_gauge("rivet_daemon_ready", &[], 0);
         let control_result = self
             .control_server
             .take()
@@ -124,12 +133,40 @@ impl RivetDaemon {
             .transpose();
         let data_result = self.data_server.take().map(TcpKvServer::stop).transpose();
 
-        match (control_result, data_result) {
-            (Err(error), _) => Err(error),
-            (_, Err(error)) => Err(error),
-            (Ok(_), Ok(_)) => Ok(()),
+        match (control_result, data_result, readiness_result) {
+            (Err(error), _, _) => Err(error),
+            (_, Err(error), _) => Err(error),
+            (_, _, Err(error)) => Err(error),
+            (Ok(_), Ok(_), Ok(())) => Ok(()),
         }
     }
+}
+
+fn register_daemon_metrics(
+    metrics: &PrometheusRegistry,
+    config: &DaemonConfig,
+) -> io::Result<()> {
+    metrics.set_gauge(
+        "rivet_daemon_build_info",
+        &[("tier", DAEMON_TIER), ("version", env!("CARGO_PKG_VERSION"))],
+        1,
+    )?;
+    metrics.set_gauge(
+        "rivet_daemon_capacity_bytes",
+        &[("tier", "memory")],
+        gauge_bytes(config.memory_capacity_bytes),
+    )?;
+    metrics.set_gauge(
+        "rivet_daemon_capacity_bytes",
+        &[("tier", "persistent")],
+        gauge_bytes(config.persistent_capacity_bytes),
+    )?;
+    metrics.set_gauge("rivet_daemon_ready", &[], 0)?;
+    Ok(())
+}
+
+fn gauge_bytes(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
 }
 
 #[cfg(test)]
@@ -189,6 +226,12 @@ mod tests {
         assert!(metrics.starts_with("HTTP/1.1 200 OK"));
         assert!(metrics.contains("rivet_kv_tier_requests_total"));
         assert!(metrics.contains("operation=\"health\""));
+        assert!(metrics.contains("rivet_daemon_ready 1"));
+        assert!(metrics.contains("rivet_daemon_capacity_bytes{tier=\"memory\"} 2097152"));
+        assert!(metrics.contains("rivet_daemon_capacity_bytes{tier=\"persistent\"} 8388608"));
+        assert!(metrics.contains("rivet_daemon_build_info"));
+        assert!(metrics.contains("tier=\"daemon-cache\""));
+        assert!(metrics.contains(&format!("version=\"{}\"", env!("CARGO_PKG_VERSION"))));
 
         daemon.stop()?;
         let _ = std::fs::remove_dir_all(root);
@@ -206,5 +249,10 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn byte_gauge_saturates_at_prometheus_integer_limit() {
+        assert_eq!(gauge_bytes(u64::MAX), i64::MAX);
     }
 }
