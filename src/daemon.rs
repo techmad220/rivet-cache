@@ -142,13 +142,13 @@ impl RivetDaemon {
     }
 }
 
-fn register_daemon_metrics(
-    metrics: &PrometheusRegistry,
-    config: &DaemonConfig,
-) -> io::Result<()> {
+fn register_daemon_metrics(metrics: &PrometheusRegistry, config: &DaemonConfig) -> io::Result<()> {
     metrics.set_gauge(
         "rivet_daemon_build_info",
-        &[("tier", DAEMON_TIER), ("version", env!("CARGO_PKG_VERSION"))],
+        &[
+            ("tier", DAEMON_TIER),
+            ("version", env!("CARGO_PKG_VERSION")),
+        ],
         1,
     )?;
     metrics.set_gauge(

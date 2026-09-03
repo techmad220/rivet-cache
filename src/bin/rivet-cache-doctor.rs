@@ -217,13 +217,17 @@ fn metric_sample<'a>(
         let Some((series, value)) = line.rsplit_once(' ') else {
             continue;
         };
-        let series_name = series.split_once('{').map(|(value, _)| value).unwrap_or(series);
+        let series_name = series
+            .split_once('{')
+            .map(|(value, _)| value)
+            .unwrap_or(series);
         if series_name != name {
             continue;
         }
-        if !labels.iter().all(|(key, expected)| {
-            label_value(series, key).as_deref() == Some(*expected)
-        }) {
+        if !labels
+            .iter()
+            .all(|(key, expected)| label_value(series, key).as_deref() == Some(*expected))
+        {
             continue;
         }
         let value = value.parse::<u64>().map_err(|_| {
@@ -317,12 +321,15 @@ fn ensure_http_ok(response: &str, path: &str) -> io::Result<()> {
 }
 
 fn http_body(response: &str) -> io::Result<&str> {
-    response.split_once("\r\n\r\n").map(|(_, body)| body).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "HTTP response is missing header/body separator",
-        )
-    })
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP response is missing header/body separator",
+            )
+        })
 }
 
 fn resolve_one(endpoint: &str) -> io::Result<SocketAddr> {
